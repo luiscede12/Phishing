@@ -1,0 +1,89 @@
+---
+title: "Técnicas de machine learning para la detección de páginas web de phishing"
+description: |
+  Trabajo de fin de máster
+author:
+  - name: Luis Pérez García (DNI 32724256-V)
+    affiliation: Universidad Complutense de Madrid
+    affiliation_url: 
+date: "`r Sys.Date()`"
+output:
+    distill::distill_article:
+        highlight: kate
+        colorlinks: true
+        code_folding: false
+        toc: true            
+        toc_depth: 3     
+---
+
+```{r setup, include = FALSE}
+# Ajuste comunes de los chunk
+knitr::opts_chunk$set(fig.width = 9, fig.asp = 1, out.width = "100%",
+                      message = FALSE, warning = FALSE,
+                      echo = TRUE, res = 400)
+```
+
+Cargamos la librerías que usaremos a lo largo de todo el trabajo.
+
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(outliers)
+library(skimr)
+library(ggthemes)
+library(corrr)
+library(themis)
+library(knitr)
+library(kableExtra)
+library(corrr)
+library(corrplot)
+library(moments)
+library(pscl)
+library(MASS)
+library(ranger)
+library(ggfortify)
+library(knitr)
+```
+
+# Datos
+
+Cargamos los datos brutos.
+
+```{r}
+phishing_bruto <- 
+  read.csv("dataset_full.csv")
+```
+
+# Análisis exploratorio inicial
+
+Comenzaremos observando la estructura de nuestros datos y obteniendo una visión general de nuestras 
+variables, donde también nos centraremos en como se distribuyen los niveles de nuestra objetivo 
+(phishing).
+
+```{r}
+glimpse(phishing_bruto)
+```
+
+```{r}
+skim(phishing_bruto)
+phishing_bruto <-
+  phishing_bruto |> mutate(phishing = as_factor(phishing))
+```
+
+```{r}
+# qty_slash_url
+ggplot(phishing_bruto, aes(x = qty_slash_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (/) en la URL", 
+       x = "Nº de (/)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos a variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_slash_url > 0), aes(x = qty_slash_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (/) > 0 en la URL", 
+       x = "Nº de (/)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+

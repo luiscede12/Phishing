@@ -1,0 +1,259 @@
+---
+title: "Técnicas de machine learning para la detección de páginas web de phishing"
+description: |
+  Trabajo de fin de máster
+author:
+  - name: Luis Pérez García (DNI 32724256-V)
+    affiliation: Universidad Complutense de Madrid
+    affiliation_url: 
+date: "`r Sys.Date()`"
+output:
+    distill::distill_article:
+        highlight: kate
+        colorlinks: true
+        code_folding: false
+        toc: true            
+        toc_depth: 3     
+---
+
+```{r setup, include = FALSE}
+# Ajuste comunes de los chunk
+knitr::opts_chunk$set(fig.width = 9, fig.asp = 1, out.width = "100%",
+                      message = FALSE, warning = FALSE,
+                      echo = TRUE, res = 400)
+```
+
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(outliers)
+library(skimr)
+library(ggthemes)
+library(corrr)
+library(themis)
+library(knitr)
+library(kableExtra)
+library(corrr)
+library(corrplot)
+library(moments)
+library(pscl)
+library(MASS)
+library(ranger)
+library(ggfortify)
+library(knitr)
+library(vip)
+library(rpart.plot)
+library(MASS)
+library(caret)
+library(Boruta)
+library(MXM)
+library(LiblineaR)
+library(kernlab)
+library(xgboost)
+library(baguette)
+library(pROC)
+```
+
+```{r}
+phishing_bruto <- 
+  read.csv("dataset_full.csv")
+set.seed(12345)
+phishing_split <- initial_split(phishing_bruto, strata = phishing, prop = 0.75)
+phishing_split
+```
+
+Con el argumento strata le hemos indicado que la partición se haga de forma 
+proporcional en función de nuestra variable objetivo, para de este modo tener una 
+proporción similar de ambos tipos de webs en cada conjunto generado.
+
+En hoteles split tenemos las instrucciones de la partición, ahora vamos a aplicarlas:
+
+```{r}
+set.seed(12345)
+phishing_train <- training(phishing_split)
+phishing_test <- testing(phishing_split)
+```
+
+
+
+
+
+
+```{r}
+# RECETA
+tree_rec <- 
+ recipe(data = phishing_train, phishing ~ .) |> 
+  # Eliminamos variables
+  step_rm(c(qty_slash_domain, qty_questionmark_domain, qty_equal_domain,
+            qty_at_domain, qty_and_domain ,qty_exclamation_domain, 
+            qty_space_domain, qty_tilde_domain, qty_comma_domain, 
+            qty_plus_domain, qty_asterisk_domain, qty_hashtag_domain, 
+            qty_dollar_domain, qty_percent_domain, server_client_domain, 
+            qty_params)) |> 
+  # Creamos las nuevas variables omitiendo los -1 primero
+  step_mutate(across(all_of(contains("_dot_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dots = rowSums(across(all_of(contains("_dot_"))), na.rm = TRUE)) |> 
+  step_mutate(across(all_of(contains("_hyphen_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hyphens = rowSums(across(all_of(contains("_hyphen_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_underline_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_underlines = rowSums(across(all_of(contains("_underline_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_comma_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_commas = rowSums(across(all_of(contains("_comma_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_asterisk_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_asterisks = rowSums(across(all_of(contains("_asterisk_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_slash_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_slashes = rowSums(across(all_of(contains("_slash_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_equal_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_equals = rowSums(across(all_of(contains("_equal_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_at_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ats = rowSums(across(all_of(contains("_at_") )), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_and_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ands = rowSums(across(all_of(contains("_and_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_hashtag_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hashtags = rowSums(across(all_of(contains("_hashtag_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_space_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_spaces = rowSums(across(all_of(contains("_space_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_dollar_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dollars = rowSums(across(all_of(contains("_dollar_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_percent_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_percents = rowSums(across(all_of(contains("_percent_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_exclamation_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_exclamations = rowSums(across(all_of(contains("_exclamation"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_questionmark_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_questionmarks = rowSums(across(all_of(contains("_exclamation_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_plus_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_pluses = rowSums(across(all_of(contains("_plus_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_tilde_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_tildes = rowSums(across(all_of(contains("_tilde_"))), na.rm = TRUE)) |>
+  #Apaño
+  step_mutate(tld_present_parameters = tld_present_params) |>
+  step_rm(tld_present_params) |> 
+  # Reemplazamos los NA's generados por -1 de nuevo.
+  step_mutate(across(all_of(contains("params")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("directory")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("file")), ~ifelse(is.na(.x), -1, .x))) |>
+  # Eliminamos las variables qty
+  step_rm(contains(c("_dot_", "_hyphen_", "_underline_", "_comma_", "_asterisk_", 
+                     "_slash_", "_equal_", "_at_", "_and_", "_hashtag_", "_space_", 
+                     "_dollar_", "_percent_", "_exclamation_", "_questionmark_", 
+                     "_plus_", "_tilde_"))) |>
+  # Desglosamos las numéricas con el -1 creando nuevas variables
+  step_mutate(time_domain_activation_avb = forcats::as_factor(ifelse(time_domain_activation == -1, 0, 1)),
+              time_domain_expiration_avb = forcats::as_factor(ifelse(time_domain_expiration == -1, 0, 1)),
+              domain_spf_avb = forcats::as_factor(ifelse(domain_spf == -1, 0, 1)),
+              domain_google_index_avb = forcats::as_factor(ifelse(domain_google_index == -1, 0, 1)),
+              time_response_avb = forcats::as_factor(ifelse(time_response == -1, 0, 1)),
+              asn_ip_avb = forcats::as_factor(ifelse(asn_ip == -1, 0, 1)),
+              qty_ip_resolved_avb = forcats::as_factor(ifelse(qty_ip_resolved == -1, 0, 1)),
+              qty_redirects_avb = forcats::as_factor(ifelse(qty_redirects == -1, 0, 1)),
+              tld_present_parameters_avb = forcats::as_factor(ifelse(tld_present_parameters == -1, 0, 1)),
+              params_length_avb = forcats::as_factor(ifelse(params_length == -1, 0, 1)),
+              directory_length_avb = forcats::as_factor(ifelse(directory_length == -1, 0, 1)),
+              file_length_avb = forcats::as_factor(ifelse(file_length == -1, 0, 1))) |> 
+  # Eliminamos las categorías con <100 obs recategorizando niveles con el nivel modal
+  step_mutate(url_google_index = forcats::fct_collapse(url_google_index, 
+                                              "0" = c("0", "-1"),
+                                              "1" = "1")) |> 
+  # Filtro de varianza 0
+  step_zv(all_predictors()) |> 
+  # Convertimos a entero
+  step_mutate(across(where(is.numeric) & !time_response, function(x) {as.integer(x)}))
+```
+
+
+
+```{r}
+# RECETA
+logist_rec <- 
+  recipe(data = phishing_train, phishing ~ .) |> 
+  # Eliminamos variables
+  step_rm(c(qty_slash_domain, qty_questionmark_domain, qty_equal_domain,
+            qty_at_domain, qty_and_domain ,qty_exclamation_domain, 
+            qty_space_domain, qty_tilde_domain, qty_comma_domain, 
+            qty_plus_domain, qty_asterisk_domain, qty_hashtag_domain, 
+            qty_dollar_domain, qty_percent_domain, server_client_domain, 
+            qty_params)) |> 
+  # Creamos las nuevas variables omitiendo los -1 primero
+  step_mutate(across(all_of(contains("_dot_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dots = rowSums(across(all_of(contains("_dot_"))), na.rm = TRUE)) |> 
+  step_mutate(across(all_of(contains("_hyphen_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hyphens = rowSums(across(all_of(contains("_hyphen_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_underline_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_underlines = rowSums(across(all_of(contains("_underline_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_comma_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_commas = rowSums(across(all_of(contains("_comma_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_asterisk_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_asterisks = rowSums(across(all_of(contains("_asterisk_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_slash_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_slashes = rowSums(across(all_of(contains("_slash_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_equal_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_equals = rowSums(across(all_of(contains("_equal_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_at_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ats = rowSums(across(all_of(contains("_at_") )), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_and_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ands = rowSums(across(all_of(contains("_and_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_hashtag_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hashtags = rowSums(across(all_of(contains("_hashtag_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_space_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_spaces = rowSums(across(all_of(contains("_space_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_dollar_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dollars = rowSums(across(all_of(contains("_dollar_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_percent_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_percents = rowSums(across(all_of(contains("_percent_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_exclamation_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_exclamations = rowSums(across(all_of(contains("_exclamation"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_questionmark_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_questionmarks = rowSums(across(all_of(contains("_exclamation_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_plus_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_pluses = rowSums(across(all_of(contains("_plus_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_tilde_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_tildes = rowSums(across(all_of(contains("_tilde_"))), na.rm = TRUE)) |>
+  #Apaño
+  step_mutate(tld_present_parameters = tld_present_params) |>
+  step_rm(tld_present_params) |> 
+  # Reemplazamos los NA's generados por -1 de nuevo.
+  step_mutate(across(all_of(contains("params")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("directory")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("file")), ~ifelse(is.na(.x), -1, .x))) |>
+  # Eliminamos las variables qty
+  step_rm(contains(c("_dot_", "_hyphen_", "_underline_", "_comma_", "_asterisk_", 
+                     "_slash_", "_equal_", "_at_", "_and_", "_hashtag_", "_space_", 
+                     "_dollar_", "_percent_", "_exclamation_", "_questionmark_", 
+                     "_plus_", "_tilde_"))) |>
+  # Desglosamos las numéricas con el -1 creando nuevas variables
+  step_mutate(time_domain_activation_avb = forcats::as_factor(ifelse(time_domain_activation == -1, 0, 1)),
+              time_domain_expiration_avb = forcats::as_factor(ifelse(time_domain_expiration == -1, 0, 1)),
+              domain_spf_avb = forcats::as_factor(ifelse(domain_spf == -1, 0, 1)),
+              domain_google_index_avb = forcats::as_factor(ifelse(domain_google_index == -1, 0, 1)),
+              time_response_avb = forcats::as_factor(ifelse(time_response == -1, 0, 1)),
+              asn_ip_avb = forcats::as_factor(ifelse(asn_ip == -1, 0, 1)),
+              qty_ip_resolved_avb = forcats::as_factor(ifelse(qty_ip_resolved == -1, 0, 1)),
+              qty_redirects_avb = forcats::as_factor(ifelse(qty_redirects == -1, 0, 1)),
+              tld_present_parameters_avb = forcats::as_factor(ifelse(tld_present_parameters == -1, 0, 1)),
+              params_length_avb = forcats::as_factor(ifelse(params_length == -1, 0, 1)),
+              directory_length_avb = forcats::as_factor(ifelse(directory_length == -1, 0, 1)),
+              file_length_avb = forcats::as_factor(ifelse(file_length == -1, 0, 1))) |> 
+  # Eliminamos las categorías con <100 obs recategorizando niveles con el nivel modal
+  step_mutate(url_google_index = forcats::fct_collapse(url_google_index, 
+                                              "0" = c("0", "-1"),
+                                              "1" = "1")) |> 
+  # Roles
+  add_role(where(is.factor), new_role = "qual") |> 
+  add_role(where(is.numeric), new_role = "quant") |> 
+  # Tratamiento de outliers
+  step_mutate(across(all_numeric_predictors(), function(x) {ifelse(length(unique(x)) >= 10 & 
+                                                              abs(scores(x, type = "mad")) > 3 & 
+                                                             skewness(x) > 3, NA, x)})) |> 
+  step_mutate(across(all_numeric_predictors(), function(x) {ifelse(length(unique(x)) >= 10 & 
+                                                              abs(scores(x, type = "z")) > 2.5 & 
+                                                              skewness(x) <= 3, NA, x)})) |> 
+  # Imputamos los outliers convetidos a NA
+  step_impute_knn(has_role("quant")) |> 
+  # Filtro de varianza 0
+  step_zv(all_predictors()) |> 
+  # Dummies
+  step_dummy(all_nominal_predictors()) |> 
+  # Convertimos a entero
+  step_mutate(across(where(is.numeric) & !time_response, function(x) {as.integer(x)}))
+```
+

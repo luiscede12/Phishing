@@ -1,0 +1,1585 @@
+
+# Librerias
+
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(outliers)
+library(skimr)
+library(ggthemes)
+library(corrr)
+library(themis)
+library(knitr)
+library(kableExtra)
+library(corrr)
+library(corrplot)
+library(moments)
+library(pscl)
+library(MASS)
+library(ranger)
+library(ggfortify)
+library(knitr)
+library(vip)
+library(rpart.plot)
+library(MASS)
+library(caret)
+library(Boruta)
+library(MXM)
+library(LiblineaR)
+library(kernlab)
+library(xgboost)
+library(baguette)
+library(pROC)
+```
+
+
+
+# Datos
+
+Cargamos los datos brutos.
+
+```{r}
+phishing_bruto <- 
+  read.csv("dataset_full.csv")
+```
+
+# Muestreo
+
+comentar
+
+```{r}
+phishing_sample <-
+  phishing_bruto |> group_by(phishing) |> 
+  slice_sample(prop = 0.2) |> 
+  ungroup()
+phishing_sample |> count(phishing) |> mutate(porc = 100*n/sum(n))
+```
+
+# Fase 3: modificación (fuera de la receta)
+
+Con lo observado en la fase de exploración deberemos tomar dos tipos decisiones:
+
+* Las que afectan a la **base de datos en general**: pasar a factores, problemas de 
+codificación o rango, variables que no aportan, creación de variables en general, etc
+
+* Las que afectan a un **algoritmo en concreto**: normalización para la métrica, 
+recategorización, tratamiento de outliers/ausentes, dummyficación, etc.
+
+Primero procedemos a las **modificaciones estructurales**:
+
+Como habíamos observado, había determinadas variables que estaban codificadas 
+como numéricas cuando realmente eran de carácter cualitativo. De este modo, 
+nuestro primer paso será convertir las variables domain_in_ip, server_client_domain, 
+tld_present_params, email_in_url, domain_spf, tls_ssl_certificate, url_google_index, 
+domain_google_index, url_shortened y nuestra variable objetivo phishing.
+
+Por otro lado, eliminaremos de la memoria el dataset con todos los registros, ya que a partir de 
+ahora, usaremos nuestra muestra estratificada para nuestros modelos.
+
+```{r}
+phishing_sample <-
+  phishing_sample |> mutate(domain_in_ip = forcats::as_factor(domain_in_ip),
+                           email_in_url = forcats::as_factor(email_in_url),
+                           domain_spf = forcats::as_factor(domain_spf),
+                           tls_ssl_certificate = forcats::as_factor(tls_ssl_certificate),
+                           url_google_index = forcats::as_factor(url_google_index),
+                           domain_google_index = forcats::as_factor(domain_google_index),
+                           url_shortened = forcats::as_factor(url_shortened),
+                           phishing = forcats::as_factor(phishing),
+                           tld_present_params = forcats::as_factor(tld_present_params))
+```
+
+# Fase 3: modificación (dentro de la receta)
+
+## Partición
+
+Antes de comenzar a elaborar nuestra "receta", la cual contendrá todas las instrucciones 
+de procesamiento de datos que estarán enfocados en un determinado algoritmo, comenzaremos 
+realizando nuestra partición. Para ello comenzaremos dividiendo nuestros datos en train 
+y test, con un 70% en entrenamiento y un 30% en este último.
+
+```{r}
+set.seed(12345)
+phishing_split <- initial_split(phishing_sample, strata = phishing, prop = 0.75)
+phishing_split
+```
+
+Con el argumento strata le hemos indicado que la partición se haga de forma 
+proporcional en función de nuestra variable objetivo, para de este modo tener una 
+proporción similar de ambos tipos de webs en cada conjunto generado.
+
+En hoteles split tenemos las instrucciones de la partición, ahora vamos a aplicarlas:
+
+```{r}
+set.seed(12345)
+phishing_train <- training(phishing_split)
+phishing_test <- testing(phishing_split)
+```
+
+Tras ello nunca está de más comprobar que efectivamente está hecho de forma 
+estratificada
+
+```{r}
+# train
+phishing_train |> count(phishing) |> 
+  mutate(porc = 100*n/sum(n))
+
+# test
+phishing_test |> count(phishing) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+Como vemos, se mantienen las proporciones originales para ambos niveles de la 
+variable objetivo.
+
+## Validación
+
+Por último crearemos un conjunto de validación, para de esta forma poder obtener 
+métricas de la calidad de los modelos que probemos sin ser aplicado directamente 
+al conjunto de test. Esto nos permitirá hacer una selección previa de el mejor 
+modelo que consideremos aplicar al conjunto de prueba y realizar modelos en 
+creciente complejidad.
+
+Para ello, vamos a usar un 30% del 75% de los datos que tenemos en entrenamiento. 
+Por lo tanto, nos quedría un 47,5% de los datos en entrenamiento, un 22,5% en 
+validación y el 30% de test el cual no va a ser alterado.
+
+```{r}
+set.seed(12345)
+phishing_val <- validation_split(phishing_train, strata = phishing, prop = 0.7)
+phishing_val
+```
+
+Le hemos especificado a la función que use un 70% de entrenamiento y que el resto 
+lo use para crear el conjunto de validación. Una vez más, le especificamos que 
+separe este conjunto de forma estratificada.
+
+
+## Receta: regresión logística
+
+```{r}
+# RECETA
+logist_rec <- 
+  recipe(data = phishing_train, phishing ~ .) |> 
+  # Eliminamos variables
+  step_rm(c(qty_slash_domain, qty_questionmark_domain, qty_equal_domain,
+            qty_at_domain, qty_and_domain ,qty_exclamation_domain, 
+            qty_space_domain, qty_tilde_domain, qty_comma_domain, 
+            qty_plus_domain, qty_asterisk_domain, qty_hashtag_domain, 
+            qty_dollar_domain, qty_percent_domain, server_client_domain, 
+            qty_params)) |> 
+  # Creamos las nuevas variables omitiendo los -1 primero
+  step_mutate(across(all_of(contains("_dot_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dots = rowSums(across(all_of(contains("_dot_"))), na.rm = TRUE)) |> 
+  step_mutate(across(all_of(contains("_hyphen_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hyphens = rowSums(across(all_of(contains("_hyphen_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_underline_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_underlines = rowSums(across(all_of(contains("_underline_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_comma_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_commas = rowSums(across(all_of(contains("_comma_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_asterisk_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_asterisks = rowSums(across(all_of(contains("_asterisk_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_slash_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_slashes = rowSums(across(all_of(contains("_slash_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_equal_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_equals = rowSums(across(all_of(contains("_equal_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_at_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ats = rowSums(across(all_of(contains("_at_") )), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_and_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ands = rowSums(across(all_of(contains("_and_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_hashtag_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hashtags = rowSums(across(all_of(contains("_hashtag_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_space_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_spaces = rowSums(across(all_of(contains("_space_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_dollar_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dollars = rowSums(across(all_of(contains("_dollar_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_percent_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_percents = rowSums(across(all_of(contains("_percent_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_exclamation_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_exclamations = rowSums(across(all_of(contains("_exclamation"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_questionmark_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_questionmarks = rowSums(across(all_of(contains("_exclamation_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_plus_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_pluses = rowSums(across(all_of(contains("_plus_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_tilde_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_tildes = rowSums(across(all_of(contains("_tilde_"))), na.rm = TRUE)) |>
+  #Apaño
+  step_mutate(tld_present_parameters = tld_present_params) |>
+  step_rm(tld_present_params) |> 
+  # Reemplazamos los NA's generados por -1 de nuevo.
+  step_mutate(across(all_of(contains("params")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("directory")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("file")), ~ifelse(is.na(.x), -1, .x))) |>
+  # Eliminamos las variables qty
+  step_rm(contains(c("_dot_", "_hyphen_", "_underline_", "_comma_", "_asterisk_", 
+                     "_slash_", "_equal_", "_at_", "_and_", "_hashtag_", "_space_", 
+                     "_dollar_", "_percent_", "_exclamation_", "_questionmark_", 
+                     "_plus_", "_tilde_"))) |>
+  # Desglosamos las numéricas con el -1 creando nuevas variables
+  step_mutate(time_domain_activation_avb = forcats::as_factor(ifelse(time_domain_activation == -1, 0, 1)),
+              time_domain_expiration_avb = forcats::as_factor(ifelse(time_domain_expiration == -1, 0, 1)),
+              domain_spf_avb = forcats::as_factor(ifelse(domain_spf == -1, 0, 1)),
+              domain_google_index_avb = forcats::as_factor(ifelse(domain_google_index == -1, 0, 1)),
+              time_response_avb = forcats::as_factor(ifelse(time_response == -1, 0, 1)),
+              asn_ip_avb = forcats::as_factor(ifelse(asn_ip == -1, 0, 1)),
+              qty_ip_resolved_avb = forcats::as_factor(ifelse(qty_ip_resolved == -1, 0, 1)),
+              qty_redirects_avb = forcats::as_factor(ifelse(qty_redirects == -1, 0, 1)),
+              tld_present_parameters_avb = forcats::as_factor(ifelse(tld_present_parameters == -1, 0, 1)),
+              params_length_avb = forcats::as_factor(ifelse(params_length == -1, 0, 1)),
+              directory_length_avb = forcats::as_factor(ifelse(directory_length == -1, 0, 1)),
+              file_length_avb = forcats::as_factor(ifelse(file_length == -1, 0, 1))) |> 
+  # Eliminamos las categorías con <100 obs recategorizando niveles con el nivel modal
+  step_mutate(url_google_index = forcats::fct_collapse(url_google_index, 
+                                              "0" = c("0", "-1"),
+                                              "1" = "1")) |> 
+  # Roles
+  add_role(where(is.factor), new_role = "qual") |> 
+  add_role(where(is.numeric), new_role = "quant") |> 
+  # Tratamiento de outliers
+  step_mutate(across(all_numeric_predictors(), function(x) {ifelse(length(unique(x)) >= 10 & 
+                                                              abs(scores(x, type = "mad")) > 3 & 
+                                                             skewness(x) > 3, NA, x)})) |> 
+  step_mutate(across(all_numeric_predictors(), function(x) {ifelse(length(unique(x)) >= 10 & 
+                                                              abs(scores(x, type = "z")) > 2.5 & 
+                                                              skewness(x) <= 3, NA, x)})) |> 
+  # Imputamos los outliers convetidos a NA
+  step_impute_knn(has_role("quant")) |> 
+  # Dummies
+  step_dummy(all_nominal_predictors()) |> 
+  # Filtro de varianza 0
+  step_zv(all_predictors()) |> 
+  # Convertimos a entero
+  step_mutate(across(where(is.numeric) & !time_response, function(x) {as.integer(x)}))
+```
+
+# Random forest
+
+implementaremos un random forest, en el cual le tenemos que especificar 3 argumentos:
+
+* Mtry: número de predictores
+* min_n: número minimo de observaciones para las divisiones de nodos
+* trees: número de árboles que prueba
+
+```{r}
+# RECETA
+rec_xgb <- 
+ recipe(data = phishing_train, phishing ~ .) |> 
+  # Eliminamos variables
+  step_rm(c(qty_slash_domain, qty_questionmark_domain, qty_equal_domain,
+            qty_at_domain, qty_and_domain ,qty_exclamation_domain, 
+            qty_space_domain, qty_tilde_domain, qty_comma_domain, 
+            qty_plus_domain, qty_asterisk_domain, qty_hashtag_domain, 
+            qty_dollar_domain, qty_percent_domain, server_client_domain, 
+            qty_params)) |> 
+  # Creamos las nuevas variables omitiendo los -1 primero
+  step_mutate(across(all_of(contains("_dot_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dots = rowSums(across(all_of(contains("_dot_"))), na.rm = TRUE)) |> 
+  step_mutate(across(all_of(contains("_hyphen_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hyphens = rowSums(across(all_of(contains("_hyphen_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_underline_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_underlines = rowSums(across(all_of(contains("_underline_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_comma_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_commas = rowSums(across(all_of(contains("_comma_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_asterisk_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_asterisks = rowSums(across(all_of(contains("_asterisk_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_slash_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_slashes = rowSums(across(all_of(contains("_slash_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_equal_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_equals = rowSums(across(all_of(contains("_equal_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_at_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ats = rowSums(across(all_of(contains("_at_") )), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_and_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ands = rowSums(across(all_of(contains("_and_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_hashtag_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hashtags = rowSums(across(all_of(contains("_hashtag_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_space_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_spaces = rowSums(across(all_of(contains("_space_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_dollar_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dollars = rowSums(across(all_of(contains("_dollar_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_percent_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_percents = rowSums(across(all_of(contains("_percent_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_exclamation_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_exclamations = rowSums(across(all_of(contains("_exclamation"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_questionmark_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_questionmarks = rowSums(across(all_of(contains("_exclamation_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_plus_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_pluses = rowSums(across(all_of(contains("_plus_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_tilde_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_tildes = rowSums(across(all_of(contains("_tilde_"))), na.rm = TRUE)) |>
+  #Apaño
+  step_mutate(tld_present_parameters = tld_present_params) |>
+  step_rm(tld_present_params) |> 
+  # Reemplazamos los NA's generados por -1 de nuevo.
+  step_mutate(across(all_of(contains("params")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("directory")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("file")), ~ifelse(is.na(.x), -1, .x))) |>
+  # TRY
+  step_mutate(directory_char_not_avb = rowSums(across(contains("_directory"), ~ . == -1))) |>
+  step_mutate(params_char_not_avb = rowSums(across(contains("_params"), ~ . == -1))) |>
+  step_mutate(file_char_not_avb = rowSums(across(contains("_file"), ~ . == -1))) |>
+  step_mutate(directory_char_avb = forcats::as_factor(ifelse(directory_char_not_avb == 17, 0, 1)),
+              params_char_avb = forcats::as_factor(ifelse(params_char_not_avb == 17, 0, 1)),
+              file_char_avb = forcats::as_factor(ifelse(file_char_not_avb == 17, 0, 1))) |>
+  # Eliminamos las variables qty
+  step_rm(contains(c("_dot_", "_hyphen_", "_underline_", "_comma_", "_asterisk_", 
+                     "_slash_", "_equal_", "_at_", "_and_", "_hashtag_", "_space_", 
+                     "_dollar_", "_percent_", "_exclamation_", "_questionmark_", 
+                     "_plus_", "_tilde_"))) |>
+  step_rm(c(directory_char_not_avb, params_char_not_avb, file_char_not_avb)) |> 
+  # Desglosamos las numéricas con el -1 creando nuevas variables
+  step_mutate(time_domain_activation_avb = forcats::as_factor(ifelse(time_domain_activation == -1, 0, 1)),
+              time_domain_expiration_avb = forcats::as_factor(ifelse(time_domain_expiration == -1, 0, 1)),
+              domain_spf_avb = forcats::as_factor(ifelse(domain_spf == -1, 0, 1)),
+              domain_google_index_avb = forcats::as_factor(ifelse(domain_google_index == -1, 0, 1)),
+              time_response_avb = forcats::as_factor(ifelse(time_response == -1, 0, 1)),
+              asn_ip_avb = forcats::as_factor(ifelse(asn_ip == -1, 0, 1)),
+              qty_ip_resolved_avb = forcats::as_factor(ifelse(qty_ip_resolved == -1, 0, 1)),
+              qty_redirects_avb = forcats::as_factor(ifelse(qty_redirects == -1, 0, 1)),
+              tld_present_parameters_avb = forcats::as_factor(ifelse(tld_present_parameters == -1, 0, 1)),
+              params_length_avb = forcats::as_factor(ifelse(params_length == -1, 0, 1)),
+              file_length_avb = forcats::as_factor(ifelse(file_length == -1, 0, 1)),
+              directory_length_avb = forcats::as_factor(ifelse(directory_length == -1, 0, 1)),
+              directory_length_avb = forcats::as_factor(ifelse(directory_length == -1, 0, 1)),
+              params_length_avb = forcats::as_factor(ifelse(params_length == -1, 0, 1)),
+              file_length_avb = forcats::as_factor(ifelse(file_length == -1, 0, 1))) |> 
+  # Eliminamos las categorías con <100 obs recategorizando niveles con el nivel modal
+  step_mutate(url_google_index = forcats::fct_collapse(url_google_index, 
+                                              "0" = c("0", "-1"),
+                                              "1" = "1")) |> 
+  # Filtro de varianza 0
+  step_zv(all_predictors()) |>
+  # Dummies
+  step_dummy(all_nominal_predictors()) |> 
+  # Convertimos a entero
+  step_mutate(across(where(is.numeric) & !time_response, function(x) {as.integer(x)}))
+```
+
+bake
+
+```{r}
+bake(xgb)
+```
+
+
+# XGboost
+
+```{r}
+xgboost_model <- 
+  boost_tree(mtry = tune("n_pred"),
+             trees = 1000, min_n = tune("min_n"), learn_rate = tune("learn_rate"),
+             loss_reduction = tune("loss_reduction")) |> 
+  set_engine("xgboost") |> set_mode("classification") |> translate()
+
+grid_xgboost <- 
+  expand_grid("n_pred" = seq(2, 22, 4),
+              "min_n" = c(10, 50, 100, 300, 1000),
+              "learn_rate" = c(0.0001, 0.001, 0.01, 1),
+              "loss_reduction" = c(0.0001, 0.001, 0.01, 1)) 
+grid_xgboost
+
+phishing_xgboost_wflow <-
+  workflow() |> 
+  add_recipe(rec_xgb) |> 
+  add_model(xgboost_model)
+
+phishing_cv_folds <-
+  vfold_cv(data = phishing_train, v = 10, repeats = 5, strata = phishing)
+```
+
+Paralelizamos
+
+```{r}
+library(parallel)
+library(doParallel)
+set.seed(12345)
+clusters <- detectCores() - 1
+make_cluster <- makeCluster(clusters)
+registerDoParallel(make_cluster)
+showConnections()
+
+metricas <-
+  metric_set(yardstick::accuracy, yardstick::sensitivity, yardstick::specificity, yardstick::roc_auc)
+xgboost_tune_par <- 
+  phishing_xgboost_wflow |> 
+  tune_grid(resamples = phishing_cv_folds,
+            grid = grid_xgboost, metrics = metricas,
+            control =
+              control_grid(verbose = TRUE, allow_par = TRUE, save_pred = TRUE))
+
+stopCluster(make_cluster)
+registerDoSEQ()
+```
+
+
+```{r}
+metric_df <- xgboost_tune_par |> collect_metrics()
+metric_df
+```
+
+```{r}
+xgboost_tune_par |> select_best("roc_auc")
+best_xgboost <- xgboost_tune_par |> select_best("roc_auc")
+```
+
+```{r}
+final_xgb_wflow <- phishing_xgboost_wflow |> finalize_workflow(best_xgboost)
+final_xgb_wflow
+```
+
+final fit
+
+```{r}
+set.seed(12345)
+final_xgb_fit <-
+  final_xgb_wflow |> last_fit(phishing_split, metrics = metric_set(yardstick::accuracy, yardstick::sensitivity,
+                                     yardstick::specificity, yardstick::roc_auc))
+final_xgb_fit |> collect_metrics()
+```
+
+## Predicción
+
+```{r}
+predict(extract_workflow(final_xgb_fit), phishing_test)
+predict(extract_workflow(final_xgb_fit), phishing_test, type = "prob")
+# Inlcuimos predicciones en la tabla
+prob_test_xgb <-
+  augment(extract_workflow(final_xgb_fit), phishing_test)
+
+# Matriz de confusión
+conf_mat_rf <-
+  prob_test_xgb |> 
+  conf_mat(truth = phishing, estimate = .pred_class) |> 
+  autoplot(type = "heatmap") +
+  theme_gdocs() +
+   scale_fill_gradient(high = "#00008B", low = "#ADD8E6")
+conf_mat_rf
+```
+
+# Xgboost > mtry
+
+
+```{r}
+xgboost_model <- 
+  boost_tree(mtry = tune("n_pred"),
+             trees = 1000, min_n = tune("min_n"), learn_rate = tune("learn_rate"),
+             loss_reduction = tune("loss_reduction")) |> 
+  set_engine("xgboost") |> set_mode("classification") |> translate()
+
+grid_xgboost <- 
+  expand_grid("n_pred" = seq(16, 36, 4),
+              "min_n" = c(10, 50, 100, 300, 1000),
+              "learn_rate" = c(0.0001, 0.001, 0.01, 1),
+              "loss_reduction" = c(0.0001, 0.001, 0.01, 1)) 
+grid_xgboost
+
+phishing_xgboost_wflow <-
+  workflow() |> 
+  add_recipe(rec_xgb) |> 
+  add_model(xgboost_model)
+
+phishing_cv_folds <-
+  vfold_cv(data = phishing_train, v = 10, repeats = 5, strata = phishing)
+```
+
+Paralelizamos
+
+```{r}
+library(parallel)
+library(doParallel)
+set.seed(12345)
+clusters <- detectCores() - 1
+make_cluster <- makeCluster(clusters)
+registerDoParallel(make_cluster)
+showConnections()
+
+metricas <-
+  metric_set(yardstick::accuracy, yardstick::sensitivity, yardstick::specificity, yardstick::roc_auc)
+xgboost_tune_par <- 
+  phishing_xgboost_wflow |> 
+  tune_grid(resamples = phishing_cv_folds,
+            grid = grid_xgboost, metrics = metricas,
+            control =
+              control_grid(verbose = TRUE, allow_par = TRUE, save_pred = TRUE))
+
+stopCluster(make_cluster)
+registerDoSEQ()
+
+```
+
+Seleccionamos
+
+```{r}
+xgboo
+xgboost_tune_par |> select_best("roc_auc")
+best_xgboost <- xgboost_tune_par |> select_best("roc_auc")
+```
+
+final fit
+
+```{r}
+final_xgb_wflow <- phishing_xgboost_wflow |> finalize_workflow(best_xgboost)
+final_xgb_wflow
+set.seed(12345)
+final_xgb_fit <-
+  final_xgb_wflow |> last_fit(phishing_split, metrics = metric_set(yardstick::accuracy, yardstick::sensitivity,
+                                     yardstick::specificity, yardstick::roc_auc))
+final_xgb_fit |> collect_metrics()
+```
+
+
+## Predicción
+
+```{r}
+predict(extract_workflow(final_xgb_fit), phishing_test)
+predict(extract_workflow(final_xgb_fit), phishing_test, type = "prob")
+# Inlcuimos predicciones en la tabla
+prob_test_xgb <-
+  augment(extract_workflow(final_xgb_fit), phishing_test)
+
+# Matriz de confusión
+conf_mat_rf <-
+  prob_test_xgb |> 
+  conf_mat(truth = phishing, estimate = .pred_class) |> 
+  autoplot(type = "heatmap") +
+  theme_gdocs() +
+   scale_fill_gradient(high = "#00008B", low = "#ADD8E6")
+conf_mat_rf
+
+# Agregar una columna para indicar si la clasificación es correcta o incorrecta
+prob_test_xgb$correct <- prob_test_xgb$.pred_class == prob_test_xgb$phishing
+
+# Crear un gráfico de puntos con colores para representar las clasificaciones
+ggplot(prob_test_xgb, aes(x = qty_dot_url, y = qty_hyphen_directory, color = correct)) +
+  geom_point() +
+  labs(x = "Feature 1", y = "Feature 2", color = "Clasificación") +
+  scale_color_manual(values = c("red", "green")) +
+  theme_minimal()
+```
+
+### BOX
+
+```{r}
+# Obtener las métricas AUC para cada repetición y conjunto de validación
+auc_results_xgb <- xgboost_tune_par |> 
+  collect_metrics() |> 
+  filter(.metric == "roc_auc") |> 
+  dplyr::select(.metric, .estimator, mean, .config)
+
+auc_values_xgb <- unlist(auc_results_xgb$mean)
+
+# Crear un dataframe con los valores de AUC combinados
+df_xgb <- data.frame(AUC = auc_values_xgb)
+
+# Crear el gráfico de caja
+ggplot(df_xgb, aes(x = "", y = AUC)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "AUC en conjuntos de validación",
+       x = "",
+       y = "AUC") +
+  theme_minimal()
+```
+
+
+## Receta split
+
+```{r}
+# RECETA
+rec_bagg <- 
+ recipe(data = phishing_sample, phishing ~ .) |> 
+  # Eliminamos variables
+  step_rm(c(qty_slash_domain, qty_questionmark_domain, qty_equal_domain,
+            qty_at_domain, qty_and_domain ,qty_exclamation_domain, 
+            qty_space_domain, qty_tilde_domain, qty_comma_domain, 
+            qty_plus_domain, qty_asterisk_domain, qty_hashtag_domain, 
+            qty_dollar_domain, qty_percent_domain, server_client_domain, 
+            qty_params)) |> 
+  # Creamos las nuevas variables omitiendo los -1 primero
+  step_mutate(across(all_of(contains("_dot_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dots = rowSums(across(all_of(contains("_dot_"))), na.rm = TRUE)) |> 
+  step_mutate(across(all_of(contains("_hyphen_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hyphens = rowSums(across(all_of(contains("_hyphen_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_underline_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_underlines = rowSums(across(all_of(contains("_underline_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_comma_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_commas = rowSums(across(all_of(contains("_comma_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_asterisk_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_asterisks = rowSums(across(all_of(contains("_asterisk_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_slash_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_slashes = rowSums(across(all_of(contains("_slash_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_equal_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_equals = rowSums(across(all_of(contains("_equal_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_at_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ats = rowSums(across(all_of(contains("_at_") )), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_and_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ands = rowSums(across(all_of(contains("_and_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_hashtag_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hashtags = rowSums(across(all_of(contains("_hashtag_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_space_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_spaces = rowSums(across(all_of(contains("_space_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_dollar_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dollars = rowSums(across(all_of(contains("_dollar_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_percent_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_percents = rowSums(across(all_of(contains("_percent_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_exclamation_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_exclamations = rowSums(across(all_of(contains("_exclamation"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_questionmark_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_questionmarks = rowSums(across(all_of(contains("_exclamation_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_plus_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_pluses = rowSums(across(all_of(contains("_plus_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_tilde_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_tildes = rowSums(across(all_of(contains("_tilde_"))), na.rm = TRUE)) |>
+  #Apaño
+  step_mutate(tld_present_parameters = tld_present_params) |>
+  step_rm(tld_present_params) |> 
+  # Reemplazamos los NA's generados por -1 de nuevo.
+  step_mutate(across(all_of(contains("params")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("directory")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("file")), ~ifelse(is.na(.x), -1, .x))) |>
+  # TRY
+  step_mutate(directory_char_not_avb = rowSums(across(contains("_directory"), ~ . == -1))) |>
+  step_mutate(params_char_not_avb = rowSums(across(contains("_params"), ~ . == -1))) |>
+  step_mutate(file_char_not_avb = rowSums(across(contains("_file"), ~ . == -1))) |>
+  step_mutate(directory_char_avb = forcats::as_factor(ifelse(directory_char_not_avb == 17, 0, 1)),
+              params_char_avb = forcats::as_factor(ifelse(params_char_not_avb == 17, 0, 1)),
+              file_char_avb = forcats::as_factor(ifelse(file_char_not_avb == 17, 0, 1))) |>
+  # Eliminamos las variables qty
+  step_rm(contains(c("_dot_", "_hyphen_", "_underline_", "_comma_", "_asterisk_", 
+                     "_slash_", "_equal_", "_at_", "_and_", "_hashtag_", "_space_", 
+                     "_dollar_", "_percent_", "_exclamation_", "_questionmark_", 
+                     "_plus_", "_tilde_"))) |>
+  step_rm(c(directory_char_not_avb, params_char_not_avb, file_char_not_avb)) |> 
+  # Desglosamos las numéricas con el -1 creando nuevas variables
+  step_mutate(time_domain_activation_avb = forcats::as_factor(ifelse(time_domain_activation == -1, 0, 1)),
+              time_domain_expiration_avb = forcats::as_factor(ifelse(time_domain_expiration == -1, 0, 1)),
+              domain_spf_avb = forcats::as_factor(ifelse(domain_spf == -1, 0, 1)),
+              domain_google_index_avb = forcats::as_factor(ifelse(domain_google_index == -1, 0, 1)),
+              time_response_avb = forcats::as_factor(ifelse(time_response == -1, 0, 1)),
+              asn_ip_avb = forcats::as_factor(ifelse(asn_ip == -1, 0, 1)),
+              qty_ip_resolved_avb = forcats::as_factor(ifelse(qty_ip_resolved == -1, 0, 1)),
+              qty_redirects_avb = forcats::as_factor(ifelse(qty_redirects == -1, 0, 1)),
+              tld_present_parameters_avb = forcats::as_factor(ifelse(tld_present_parameters == -1, 0, 1)),
+              params_length_avb = forcats::as_factor(ifelse(params_length == -1, 0, 1)),
+              file_length_avb = forcats::as_factor(ifelse(file_length == -1, 0, 1)),
+              directory_length_avb = forcats::as_factor(ifelse(directory_length == -1, 0, 1)),
+              directory_length_avb = forcats::as_factor(ifelse(directory_length == -1, 0, 1)),
+              params_length_avb = forcats::as_factor(ifelse(params_length == -1, 0, 1)),
+              file_length_avb = forcats::as_factor(ifelse(file_length == -1, 0, 1))) |> 
+  # Eliminamos las categorías con <100 obs recategorizando niveles con el nivel modal
+  step_mutate(url_google_index = forcats::fct_collapse(url_google_index, 
+                                              "0" = c("0", "-1"),
+                                              "1" = "1")) |> 
+  # Filtro de varianza 0
+  step_zv(all_predictors()) |>
+  # Convertimos a entero
+  step_mutate(across(where(is.numeric) & !time_response, function(x) {as.integer(x)}))
+```
+
+bake
+
+```{r}
+phishing_sample2 <- 
+  bake(rec_bagg |> prep(), new_data = NULL)
+```
+
+Apaño de nombres para el modelo
+
+```{r}
+nombres <- phishing_sample2 |> dplyr::select(where(is.factor)) |> names()
+phishing_sample2 <- phishing_sample2 |> 
+  mutate(across(all_of(nombres), ~recode(., "-1" = "Nav", "1" = "Yes", "0" = "No")))
+```
+
+
+## Partición
+
+Antes de comenzar a elaborar nuestra "receta", la cual contendrá todas las instrucciones 
+de procesamiento de datos que estarán enfocados en un determinado algoritmo, comenzaremos 
+realizando nuestra partición. Para ello comenzaremos dividiendo nuestros datos en train 
+y test, con un 70% en entrenamiento y un 30% en este último.
+
+```{r}
+set.seed(12345)
+phishing_split2 <- initial_split(phishing_sample2, strata = phishing, prop = 0.75)
+phishing_split2
+```
+
+Con el argumento strata le hemos indicado que la partición se haga de forma 
+proporcional en función de nuestra variable objetivo, para de este modo tener una 
+proporción similar de ambos tipos de webs en cada conjunto generado.
+
+En hoteles split tenemos las instrucciones de la partición, ahora vamos a aplicarlas:
+
+```{r}
+set.seed(12345)
+phishing_train2 <- training(phishing_split2)
+phishing_test2 <- testing(phishing_split2)
+```
+
+Tras ello nunca está de más comprobar que efectivamente está hecho de forma 
+estratificada
+
+```{r}
+# train
+phishing_train2 |> count(phishing) |> 
+  mutate(porc = 100*n/sum(n))
+
+# test
+phishing_test2 |> count(phishing) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+Val
+
+```{r}
+set.seed(12345)
+phishing_val2 <- validation_split(phishing_train2, strata = phishing, prop = 0.7)
+phishing_val2
+```
+
+# gbm
+
+Modelos
+
+```{r}
+set.seed(12345)
+
+gbmgrid <- expand.grid(shrinkage = c(0.2, 0.1, 0.05, 0.03, 0.01, 0.001),
+ n.minobsinnode = c(5, 10, 20),
+ n.trees = c(100, 500, 1000, 5000),
+ interaction.depth=c(2))
+
+control<-trainControl(method = "cv", number = 10, savePredictions = "all",
+ classProbs = TRUE, repeats = 5) 
+
+library(parallel)
+library(doParallel)
+set.seed(12345)
+clusters <- detectCores() - 1
+make_cluster <- makeCluster(clusters)
+registerDoParallel(make_cluster)
+showConnections()
+
+gbm_model <- train(phishing ~.,
+ method = "gbm",trControl = control,tuneGrid = gbmgrid,
+ data = phishing_train2, distribution = "bernoulli", bag.fraction = 1, verbose = FALSE)
+
+stopCluster(make_cluster)
+registerDoSEQ()
+
+gbm_model
+ 
+plot(gbm_model)
+```
+
+reejecutamos
+ 
+```{r}
+gbmgrid <- expand.grid(shrinkage = c(0.1),
+ n.minobsinnode = c(10),
+ n.trees = c(1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000),
+ interaction.depth=c(2))
+
+library(parallel)
+library(doParallel)
+set.seed(12345)
+clusters <- detectCores() - 1
+make_cluster <- makeCluster(clusters)
+registerDoParallel(make_cluster)
+showConnections()
+
+gbm_model <- train(phishing ~.,
+ method = "gbm",trControl = control,tuneGrid = gbmgrid,
+ data = phishing_train2, distribution = "bernoulli", bag.fraction = 1, verbose = FALSE)
+
+stopCluster(make_cluster)
+registerDoSEQ()
+
+gbm_model
+ 
+plot(gbm_model)
+```
+
+Importancia de variables
+
+```{r}
+par(cex=1.3)
+summary(gbm_model)
+
+tabla<-summary(gbm_model)
+par(cex=1.5,las=2)
+barplot(tabla$rel.inf,names.arg=row.names(tabla))
+```
+
+
+## Modelo final
+
+```{r}
+set.seed(12345)
+gbmgrid <- expand.grid(shrinkage = c(0.1),
+ n.minobsinnode = c(10),
+ n.trees = c(3500),
+ interaction.depth=c(2))
+
+gbm_model_final <- train(phishing ~.,
+ method = "gbm",trControl = control,tuneGrid = gbmgrid,
+ data = phishing_train2, distribution = "bernoulli", bag.fraction = 1, verbose = FALSE)
+```
+
+Predicciones
+
+```{r}
+gbm_pred <- predict(gbm_model_final, phishing_test2)
+gbm_pred
+
+confusionMatrix(gbm_pred, reference = phishing_test2$phishing, positive = "Yes")
+
+gbm_probs <- predict(gbm_model_final, newdata = phishing_test2, type = "prob")[, 1]
+roc_obj <- roc(response = phishing_test2$phishing, gbm_probs)
+plot(roc_obj, main = "Curva ROC", xlab = "Tasa de Falsos Positivos", ylab = "Tasa de Verdaderos Positivos")
+auc <- auc(roc_obj)
+auc
+```
+
+## Importancia var
+
+```{r}
+summary(gbm_model)
+tabla<-summary(gbm_model)
+par(cex=1.5,las=2)
+barplot(tabla$rel.inf,names.arg=row.names(tabla))
+```
+
+
+# Bagging true
+
+```{r}
+# RECETA
+rec_bagging <- 
+ recipe(data = phishing_train, phishing ~ .) |> 
+  # Eliminamos variables
+  step_rm(c(qty_slash_domain, qty_questionmark_domain, qty_equal_domain,
+            qty_at_domain, qty_and_domain ,qty_exclamation_domain, 
+            qty_space_domain, qty_tilde_domain, qty_comma_domain, 
+            qty_plus_domain, qty_asterisk_domain, qty_hashtag_domain, 
+            qty_dollar_domain, qty_percent_domain, server_client_domain, 
+            qty_params)) |> 
+  # Creamos las nuevas variables omitiendo los -1 primero
+  step_mutate(across(all_of(contains("_dot_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dots = rowSums(across(all_of(contains("_dot_"))), na.rm = TRUE)) |> 
+  step_mutate(across(all_of(contains("_hyphen_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hyphens = rowSums(across(all_of(contains("_hyphen_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_underline_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_underlines = rowSums(across(all_of(contains("_underline_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_comma_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_commas = rowSums(across(all_of(contains("_comma_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_asterisk_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_asterisks = rowSums(across(all_of(contains("_asterisk_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_slash_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_slashes = rowSums(across(all_of(contains("_slash_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_equal_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_equals = rowSums(across(all_of(contains("_equal_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_at_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ats = rowSums(across(all_of(contains("_at_") )), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_and_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ands = rowSums(across(all_of(contains("_and_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_hashtag_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hashtags = rowSums(across(all_of(contains("_hashtag_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_space_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_spaces = rowSums(across(all_of(contains("_space_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_dollar_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dollars = rowSums(across(all_of(contains("_dollar_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_percent_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_percents = rowSums(across(all_of(contains("_percent_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_exclamation_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_exclamations = rowSums(across(all_of(contains("_exclamation"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_questionmark_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_questionmarks = rowSums(across(all_of(contains("_exclamation_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_plus_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_pluses = rowSums(across(all_of(contains("_plus_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_tilde_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_tildes = rowSums(across(all_of(contains("_tilde_"))), na.rm = TRUE)) |>
+  #Apaño
+  step_mutate(tld_present_parameters = tld_present_params) |>
+  step_rm(tld_present_params) |> 
+  # Reemplazamos los NA's generados por -1 de nuevo.
+  step_mutate(across(all_of(contains("params")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("directory")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("file")), ~ifelse(is.na(.x), -1, .x))) |>
+  # TRY
+  step_mutate(directory_char_not_avb = rowSums(across(contains("_directory"), ~ . == -1))) |>
+  step_mutate(params_char_not_avb = rowSums(across(contains("_params"), ~ . == -1))) |>
+  step_mutate(file_char_not_avb = rowSums(across(contains("_file"), ~ . == -1))) |>
+  step_mutate(directory_char_avb = forcats::as_factor(ifelse(directory_char_not_avb == 17, 0, 1)),
+              params_char_avb = forcats::as_factor(ifelse(params_char_not_avb == 17, 0, 1)),
+              file_char_avb = forcats::as_factor(ifelse(file_char_not_avb == 17, 0, 1))) |>
+  # Eliminamos las variables qty
+  step_rm(contains(c("_dot_", "_hyphen_", "_underline_", "_comma_", "_asterisk_", 
+                     "_slash_", "_equal_", "_at_", "_and_", "_hashtag_", "_space_", 
+                     "_dollar_", "_percent_", "_exclamation_", "_questionmark_", 
+                     "_plus_", "_tilde_"))) |>
+  step_rm(c(directory_char_not_avb, params_char_not_avb, file_char_not_avb)) |> 
+  # Desglosamos las numéricas con el -1 creando nuevas variables
+  step_mutate(time_domain_activation_avb = forcats::as_factor(ifelse(time_domain_activation == -1, 0, 1)),
+              time_domain_expiration_avb = forcats::as_factor(ifelse(time_domain_expiration == -1, 0, 1)),
+              domain_spf_avb = forcats::as_factor(ifelse(domain_spf == -1, 0, 1)),
+              domain_google_index_avb = forcats::as_factor(ifelse(domain_google_index == -1, 0, 1)),
+              time_response_avb = forcats::as_factor(ifelse(time_response == -1, 0, 1)),
+              asn_ip_avb = forcats::as_factor(ifelse(asn_ip == -1, 0, 1)),
+              qty_ip_resolved_avb = forcats::as_factor(ifelse(qty_ip_resolved == -1, 0, 1)),
+              qty_redirects_avb = forcats::as_factor(ifelse(qty_redirects == -1, 0, 1)),
+              tld_present_parameters_avb = forcats::as_factor(ifelse(tld_present_parameters == -1, 0, 1)),
+              params_length_avb = forcats::as_factor(ifelse(params_length == -1, 0, 1)),
+              file_length_avb = forcats::as_factor(ifelse(file_length == -1, 0, 1)),
+              directory_length_avb = forcats::as_factor(ifelse(directory_length == -1, 0, 1)),
+              directory_length_avb = forcats::as_factor(ifelse(directory_length == -1, 0, 1)),
+              params_length_avb = forcats::as_factor(ifelse(params_length == -1, 0, 1)),
+              file_length_avb = forcats::as_factor(ifelse(file_length == -1, 0, 1))) |> 
+  # Eliminamos las categorías con <100 obs recategorizando niveles con el nivel modal
+  step_mutate(url_google_index = forcats::fct_collapse(url_google_index, 
+                                              "0" = c("0", "-1"),
+                                              "1" = "1")) |> 
+  # Filtro de varianza 0
+  step_zv(all_predictors()) |>
+  # Convertimos a entero
+  step_mutate(across(where(is.numeric) & !time_response, function(x) {as.integer(x)}))
+```
+
+Modelo
+ 
+```{r}
+bagg_model <-
+  rand_forest(mode = "classification", mtry = tune("n_pred"),
+              min_n = tune("min_n"), trees = 1000) |> 
+  set_engine("ranger", num.threads = 7)
+
+grid_bagg <- 
+  expand_grid("n_pred" = 57,
+              "min_n" = c(1, 5, 10, 20, 50, 100, 200, 500, 1000))
+grid_bagg
+phishing_bagg_wflow <-
+  workflow() |> 
+  add_recipe(rec_bagging) |> 
+  add_model(bagg_model)
+```
+
+Paralelizamos
+
+```{r}
+library(parallel)
+library(doParallel)
+set.seed(12345)
+clusters <- detectCores() - 1
+make_cluster <- makeCluster(clusters)
+registerDoParallel(make_cluster)
+showConnections()
+
+metricas <-
+  metric_set(yardstick::accuracy, yardstick::sensitivity, yardstick::specificity, yardstick::roc_auc)
+bagg_tune_par <- 
+  phishing_bagg_wflow |> 
+  tune_grid(resamples = phishing_cv_folds,
+            grid = grid_bagg, metrics = metricas,
+            control =
+              control_grid(verbose = TRUE, allow_par = TRUE, save_pred = TRUE))
+
+stopCluster(make_cluster)
+registerDoSEQ()
+```
+
+
+
+seleccionamos el mejor
+
+```{r}
+best_bagg <- bagg_tune_par |> select_best("roc_auc")
+bagg_tune_par |> collect_metrics()
+
+```
+
+## BOX
+
+```{r}
+# Obtener las métricas AUC para cada repetición y conjunto de validación
+auc_results_bagg <- bagg_tune_par |> 
+  collect_metrics() |> 
+  filter(.metric == "roc_auc") |> 
+  dplyr::select(.metric, .estimator, mean, .config)
+
+auc_values <- unlist(auc_results_bagg$mean)
+
+# Crear un dataframe con los valores de AUC combinados
+df <- data.frame(AUC = auc_values)
+
+# Crear el gráfico de caja
+ggplot(df, aes(x = "", y = AUC)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "AUC en conjuntos de validación",
+       x = "",
+       y = "AUC") +
+  theme_minimal()
+```
+
+
+final fit
+
+```{r}
+final_bagg_wflow <- phishing_bagg_wflow |> finalize_workflow(best_bagg)
+final_bagg_wflow
+set.seed(12345)
+final_bagg_fit <-
+  final_bagg_wflow |> last_fit(phishing_split, metrics = metric_set(yardstick::accuracy, yardstick::sensitivity,
+                                     yardstick::specificity, yardstick::roc_auc))
+final_bagg_fit |> collect_metrics()
+```
+
+## Predicciones
+
+```{r}
+predict(extract_workflow(final_bagg_fit), phishing_test)
+predict(extract_workflow(final_bagg_fit), phishing_test, type = "prob")
+# Inlcuimos predicciones en la tabla
+prob_test_bagg <-
+  augment(extract_workflow(final_bagg_fit), phishing_test)
+
+# Matriz de confusión
+conf_mat_bagg <-
+  prob_test_bagg |> 
+  conf_mat(truth = phishing, estimate = .pred_class) |> 
+  autoplot(type = "heatmap") +
+  theme_gdocs() +
+   scale_fill_gradient(high = "#00008B", low = "#ADD8E6")
+conf_mat_bagg
+```
+
+
+# Ensamblado
+
+## Receta split2
+
+```{r}
+# RECETA
+ens_rec <- 
+  recipe(data = phishing_sample, phishing ~ .) |> 
+  # Eliminamos variables
+  step_rm(c(qty_slash_domain, qty_questionmark_domain, qty_equal_domain,
+            qty_at_domain, qty_and_domain ,qty_exclamation_domain, 
+            qty_space_domain, qty_tilde_domain, qty_comma_domain, 
+            qty_plus_domain, qty_asterisk_domain, qty_hashtag_domain, 
+            qty_dollar_domain, qty_percent_domain, server_client_domain, 
+            qty_params)) |> 
+  # Creamos las nuevas variables omitiendo los -1 primero
+  step_mutate(across(all_of(contains("_dot_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dots = rowSums(across(all_of(contains("_dot_"))), na.rm = TRUE)) |> 
+  step_mutate(across(all_of(contains("_hyphen_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hyphens = rowSums(across(all_of(contains("_hyphen_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_underline_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_underlines = rowSums(across(all_of(contains("_underline_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_comma_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_commas = rowSums(across(all_of(contains("_comma_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_asterisk_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_asterisks = rowSums(across(all_of(contains("_asterisk_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_slash_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_slashes = rowSums(across(all_of(contains("_slash_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_equal_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_equals = rowSums(across(all_of(contains("_equal_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_at_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ats = rowSums(across(all_of(contains("_at_") )), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_and_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_ands = rowSums(across(all_of(contains("_and_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_hashtag_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_hashtags = rowSums(across(all_of(contains("_hashtag_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_space_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_spaces = rowSums(across(all_of(contains("_space_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_dollar_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_dollars = rowSums(across(all_of(contains("_dollar_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_percent_") ), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_percents = rowSums(across(all_of(contains("_percent_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_exclamation_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_exclamations = rowSums(across(all_of(contains("_exclamation"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_questionmark_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_questionmarks = rowSums(across(all_of(contains("_exclamation_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_plus_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_pluses = rowSums(across(all_of(contains("_plus_"))), na.rm = TRUE)) |>
+  step_mutate(across(all_of(contains("_tilde_")), ~ifelse(.x == -1, NA, .x))) |> 
+  step_mutate(total_tildes = rowSums(across(all_of(contains("_tilde_"))), na.rm = TRUE)) |>
+  #Apaño
+  step_mutate(tld_present_parameters = tld_present_params) |>
+  step_rm(tld_present_params) |> 
+  # Reemplazamos los NA's generados por -1 de nuevo.
+  step_mutate(across(all_of(contains("params")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("directory")), ~ifelse(is.na(.x), -1, .x))) |>
+  step_mutate(across(all_of(contains("file")), ~ifelse(is.na(.x), -1, .x))) |>
+  # Eliminamos las variables qty
+  step_rm(contains(c("_dot_", "_hyphen_", "_underline_", "_comma_", "_asterisk_", 
+                     "_slash_", "_equal_", "_at_", "_and_", "_hashtag_", "_space_", 
+                     "_dollar_", "_percent_", "_exclamation_", "_questionmark_", 
+                     "_plus_", "_tilde_"))) |>
+  # Desglosamos las numéricas con el -1 creando nuevas variables
+  step_mutate(time_domain_activation_avb = forcats::as_factor(ifelse(time_domain_activation == -1, 0, 1)),
+              time_domain_expiration_avb = forcats::as_factor(ifelse(time_domain_expiration == -1, 0, 1)),
+              domain_spf_avb = forcats::as_factor(ifelse(domain_spf == -1, 0, 1)),
+              domain_google_index_avb = forcats::as_factor(ifelse(domain_google_index == -1, 0, 1)),
+              time_response_avb = forcats::as_factor(ifelse(time_response == -1, 0, 1)),
+              asn_ip_avb = forcats::as_factor(ifelse(asn_ip == -1, 0, 1)),
+              qty_ip_resolved_avb = forcats::as_factor(ifelse(qty_ip_resolved == -1, 0, 1)),
+              qty_redirects_avb = forcats::as_factor(ifelse(qty_redirects == -1, 0, 1)),
+              tld_present_parameters_avb = forcats::as_factor(ifelse(tld_present_parameters == -1, 0, 1)),
+              params_length_avb = forcats::as_factor(ifelse(params_length == -1, 0, 1)),
+              directory_length_avb = forcats::as_factor(ifelse(directory_length == -1, 0, 1)),
+              file_length_avb = forcats::as_factor(ifelse(file_length == -1, 0, 1))) |> 
+  # Eliminamos las categorías con <100 obs recategorizando niveles con el nivel modal
+  step_mutate(url_google_index = forcats::fct_collapse(url_google_index, 
+                                              "0" = c("0", "-1"),
+                                              "1" = "1")) |> 
+  # Roles
+  add_role(where(is.factor), new_role = "qual") |> 
+  add_role(where(is.numeric), new_role = "quant") |> 
+  # Tratamiento de outliers
+  step_mutate(across(all_numeric_predictors(), function(x) {ifelse(length(unique(x)) >= 10 & 
+                                                              abs(scores(x, type = "mad")) > 3 & 
+                                                             skewness(x) > 3, NA, x)})) |> 
+  step_mutate(across(all_numeric_predictors(), function(x) {ifelse(length(unique(x)) >= 10 & 
+                                                              abs(scores(x, type = "z")) > 2.5 & 
+                                                              skewness(x) <= 3, NA, x)})) |> 
+  # Imputamos los outliers convetidos a NA
+  step_impute_knn(has_role("quant")) |> 
+  # Dummies
+  step_dummy(all_nominal_predictors()) |> 
+  # Filtro de varianza 0
+  step_zv(all_predictors()) |> 
+  # Convertimos a entero
+  step_mutate(across(where(is.numeric) & !time_response, function(x) {as.integer(x)}))
+```
+
+
+```{r}
+phishing_sample3 <- 
+  bake(ens_rec |> prep(), new_data = NULL)
+nombres <- phishing_sample3 |> dplyr::select(where(is.factor)) |> names()
+phishing_sample3 <- phishing_sample3 |> 
+  mutate(across(all_of(nombres), ~recode(., "-1" = "Nav", "1" = "Yes", "0" = "No")))
+set.seed(12345)
+phishing_split3 <- initial_split(phishing_sample3, strata = phishing, prop = 0.75)
+phishing_split3
+phishing_train3 <- training(phishing_split3)
+phishing_test3 <- testing(phishing_split3)
+phishing_val3 <- validation_split(phishing_train3, strata = phishing, prop = 0.7)
+phishing_val3
+```
+
+
+
+
+```{r}
+source("cruzadas ensamblado binaria fuente.R")
+vardep<-"phishing"
+listconti<-c("qty_tld_url", "file_length", "params_length", "asn_ip", "time_domain_activation", 
+"qty_nameservers", "total_slashes", "total_ats", "domain_in_ip_X1", 
+"domain_spf_X0", "url_shortened_X1", "time_domain_activation_avb_X1", 
+"qty_redirects_avb_X1", "directory_length_avb_X1")
+listclass<-c("")
+grupos <- 10
+sinicio <- 1234
+repe <- 5
+phishing_train3 <- as.data.frame(phishing_train3)
+
+```
+
+## Cruzadas para ensamblar
+
+```{r}
+library(parallel)
+library(doParallel)
+set.seed(12345)
+clusters <- detectCores() - 1
+make_cluster <- makeCluster(clusters)
+registerDoParallel(make_cluster)
+showConnections()
+
+medias1<-cruzadalogistica(data=phishing_train3,
+                          vardep=vardep,listconti=listconti,
+                          listclass=listclass,grupos=grupos,sinicio=sinicio,repe=repe)
+
+medias1bis<-as.data.frame(medias1[1])
+medias1bis$modelo<-"Logistica"
+predi1<-as.data.frame(medias1[2])
+predi1$logi<-predi1$Yes
+
+medias2<-cruzadaavnnetbin(data=phishing_train3,
+                          vardep=vardep,listconti=listconti,
+                          listclass=listclass,grupos=grupos,sinicio=sinicio,repe=repe,
+                          size=c(5),decay=c(0.1),repeticiones=5,itera=200)
+
+medias2bis<-as.data.frame(medias2[1])
+medias2bis$modelo<-"avnnet"
+predi2<-as.data.frame(medias2[2])
+predi2$avnnet<-predi2$Yes
+
+
+medias3<-cruzadarfbin(data=phishing_train3,
+                      vardep=vardep,listconti=listconti,
+                      listclass=listclass,grupos=grupos,sinicio=sinicio,repe=repe,
+                      mtry=3,ntree=200,nodesize=10,replace=TRUE)
+
+
+medias3bis<-as.data.frame(medias3[1])
+medias3bis$modelo<-"rf"
+predi3<-as.data.frame(medias3[2])
+predi3$rf<-predi3$Yes
+
+medias4<-cruzadagbmbin(data=phishing_train3,
+                       vardep=vardep,listconti=listconti,
+                       listclass=listclass,grupos=grupos,sinicio=sinicio,repe=repe,
+                       n.minobsinnode=5,shrinkage=0.001,n.trees=3000,interaction.depth=2)
+
+medias4bis<-as.data.frame(medias4[1])
+medias4bis$modelo<-"gbm"
+predi4<-as.data.frame(medias4[2])
+predi4$gbm<-predi4$Yes
+
+medias5<-cruzadaxgbmbin(data=phishing_train3,
+                        vardep=vardep,listconti=listconti,
+                        listclass=listclass,grupos=grupos,sinicio=sinicio,repe=repe,
+                        min_child_weight=10,eta=0.08,nrounds=100,max_depth=6,
+                        gamma=0,colsample_bytree=1,subsample=1,
+                        alpha=0,lambda=0)
+
+
+medias5bis<-as.data.frame(medias5[1])
+medias5bis$modelo<-"xgbm"
+predi5<-as.data.frame(medias5[2])
+predi5$xgbm<-predi5$Yes
+
+
+medias6<-cruzadaSVMbin(data=phishing_train3,
+                       vardep=vardep,listconti=listconti,
+                       listclass=listclass,grupos=grupos,
+                       sinicio=sinicio,repe=repe,C=0.03)
+
+medias6bis<-as.data.frame(medias6[1])
+medias6bis$modelo<-"svmLinear"
+predi6<-as.data.frame(medias6[2])
+predi6$svmLinear<-predi6$Yes
+
+
+medias7<-cruzadaSVMbinPoly(data=phishing_train3,
+                           vardep=vardep,listconti=listconti,
+                           listclass=listclass,grupos=grupos,sinicio=sinicio,repe=repe,
+                           C=0.02,degree=2,scale=2)
+
+medias7bis<-as.data.frame(medias7[1])
+medias7bis$modelo<-"svmPoly"
+predi7<-as.data.frame(medias7[2])
+predi7$svmPoly<-predi7$Yes
+
+medias8<-cruzadaSVMbinRBF(data=phishing_train3,
+                          vardep=vardep,listconti=listconti,
+                          listclass=listclass,grupos=grupos,
+                          sinicio=sinicio,repe=repe,
+                          C=5,sigma=0.01)
+
+medias8bis<-as.data.frame(medias8[1])
+medias8bis$modelo<-"svmRadial"
+predi8<-as.data.frame(medias8[2])
+predi8$svmRadial<-predi8$Yes
+
+union1<-rbind(medias1bis,medias2bis,
+              medias3bis,medias4bis,medias5bis,medias6bis,
+              medias7bis,medias8bis)
+
+stopCluster(make_cluster)
+registerDoSEQ()
+
+par(cex.axis=0.8)
+boxplot(data=union1,tasa~modelo,col="pink",main='TASA FALLOS')
+boxplot(data=union1,auc~modelo,col="pink",main='AUC')
+
+```
+
+## Consutrucción de ensamblados
+
+```{r}
+# CONSTRUCCIÓN DE TODOS LOS ENSAMBLADOS
+# SE UTILIZARÁN LOS ARCHIVOS SURGIDOS DE LAS FUNCIONES LLAMADOS predi1,...
+
+unipredi<-cbind(predi1,predi2,predi3,predi4,predi5,predi6,predi7,predi8)
+
+unipredi<- unipredi[, !duplicated(colnames(unipredi))]
+
+unipredi$predi9<-(unipredi$logi+unipredi$avnnet)/2
+unipredi$predi10<-(unipredi$logi+unipredi$rf)/2
+unipredi$predi11<-(unipredi$logi+unipredi$gbm)/2
+unipredi$predi12<-(unipredi$logi+unipredi$xgbm)/2
+unipredi$predi13<-(unipredi$logi+unipredi$svmLinear)/2
+unipredi$predi14<-(unipredi$logi+unipredi$svmPoly)/2
+unipredi$predi15<-(unipredi$logi+unipredi$svmRadial)/2
+unipredi$predi16<-(unipredi$avnnet+unipredi$rf)/2
+unipredi$predi17<-(unipredi$avnnet+unipredi$gbm)/2
+unipredi$predi18<-(unipredi$avnnet+unipredi$xgbm)/2
+unipredi$predi19<-(unipredi$avnnet+unipredi$svmLinear)/2
+unipredi$predi20<-(unipredi$avnnet+unipredi$svmPoly)/2
+unipredi$predi21<-(unipredi$avnnet+unipredi$svmRadial)/2
+unipredi$predi22<-(unipredi$rf+unipredi$gbm)/2
+unipredi$predi23<-(unipredi$rf+unipredi$xgbm)/2
+unipredi$predi24<-(unipredi$rf+unipredi$svmLinear)/2
+unipredi$predi25<-(unipredi$rf+unipredi$svmPoly)/2
+unipredi$predi26<-(unipredi$rf+unipredi$svmRadial)/2
+unipredi$predi27<-(unipredi$gbm+unipredi$xgbm)/2
+unipredi$predi28<-(unipredi$gbm+unipredi$svmLinear)/2
+unipredi$predi29<-(unipredi$gbm+unipredi$svmPoly)/2
+unipredi$predi30<-(unipredi$gbm+unipredi$svmRadial)/2
+
+unipredi$predi31<-(unipredi$logi+unipredi$avnnet+unipredi$rf)/3
+unipredi$predi32<-(unipredi$logi+unipredi$avnnet+unipredi$gbm)/3
+unipredi$predi33<-(unipredi$logi+unipredi$avnnet+unipredi$xgbm)/3
+unipredi$predi34<-(unipredi$logi+unipredi$avnnet+unipredi$svmLinear)/3
+unipredi$predi35<-(unipredi$logi+unipredi$avnnet+unipredi$svmPoly)/3
+unipredi$predi36<-(unipredi$logi+unipredi$avnnet+unipredi$svmRadial)/3
+unipredi$predi37<-(unipredi$logi+unipredi$rf+unipredi$gbm)/3
+unipredi$predi38<-(unipredi$logi+unipredi$rf+unipredi$xgbm)/3
+unipredi$predi39<-(unipredi$logi+unipredi$rf+unipredi$svmLinear)/3
+unipredi$predi40<-(unipredi$logi+unipredi$rf+unipredi$svmPoly)/3
+unipredi$predi41<-(unipredi$logi+unipredi$rf+unipredi$svmRadial)/3
+unipredi$predi42<-(unipredi$logi+unipredi$gbm+unipredi$xgbm)/3
+unipredi$predi43<-(unipredi$logi+unipredi$gbm+unipredi$xgbm)/3
+unipredi$predi44<-(unipredi$logi+unipredi$gbm+unipredi$svmLinear)/3
+unipredi$predi45<-(unipredi$logi+unipredi$gbm+unipredi$svmPoly)/3
+unipredi$predi46<-(unipredi$logi+unipredi$gbm+unipredi$svmRadial)/3
+unipredi$predi47<-(unipredi$logi+unipredi$xgbm+unipredi$svmLinear)/3
+unipredi$predi48<-(unipredi$logi+unipredi$xgbm+unipredi$svmPoly)/3
+unipredi$predi49<-(unipredi$logi+unipredi$xgbm+unipredi$svmRadial)/3
+
+unipredi$predi50<-(unipredi$rf+unipredi$gbm+unipredi$svmLinear)/3
+unipredi$predi51<-(unipredi$rf+unipredi$gbm+unipredi$svmPoly)/3
+unipredi$predi52<-(unipredi$rf+unipredi$gbm+unipredi$svmRadial)/3
+
+unipredi$predi53<-(unipredi$rf+unipredi$xgbm+unipredi$svmLinear)/3
+unipredi$predi54<-(unipredi$rf+unipredi$xgbm+unipredi$svmPoly)/3
+unipredi$predi55<-(unipredi$rf+unipredi$xgbm+unipredi$svmRadial)/3
+
+unipredi$predi56<-(unipredi$rf+unipredi$avnnet+unipredi$gbm)/3
+unipredi$predi57<-(unipredi$rf+unipredi$avnnet+unipredi$xgbm)/3
+unipredi$predi58<-(unipredi$rf+unipredi$avnnet+unipredi$svmLinear)/3
+unipredi$predi59<-(unipredi$rf+unipredi$avnnet+unipredi$svmPoly)/3
+unipredi$predi60<-(unipredi$rf+unipredi$avnnet+unipredi$svmRadial)/3
+
+unipredi$predi61<-(unipredi$avnnet+unipredi$gbm+unipredi$svmLinear)/3
+unipredi$predi62<-(unipredi$avnnet+unipredi$gbm+unipredi$svmPoly)/3
+unipredi$predi63<-(unipredi$avnnet+unipredi$gbm+unipredi$svmRadial)/3
+
+unipredi$predi64<-(unipredi$logi+unipredi$rf+unipredi$gbm+unipredi$avnnet)/4
+unipredi$predi65<-(unipredi$logi+unipredi$rf+unipredi$xgbm+unipredi$avnnet)/4
+unipredi$predi66<-(unipredi$logi+unipredi$rf+unipredi$xgbm+unipredi$avnnet)/4
+
+unipredi$predi67<-(unipredi$logi+unipredi$rf+unipredi$xgbm+unipredi$avnnet+unipredi$svmLinear)/5
+unipredi$predi68<-(unipredi$logi+unipredi$rf+unipredi$xgbm+unipredi$avnnet+unipredi$svmPoly)/5
+unipredi$predi69<-(unipredi$logi+unipredi$rf+unipredi$xgbm+unipredi$avnnet+unipredi$svmRadial)/5
+```
+
+listado de modelos a considerar
+
+```{r}
+dput(names(unipredi))
+listado <- c( "rf", "gbm","xgbm", "logi", "svmLinear", "avnnet","svmPoly", "svmRadial", "predi9", "predi10", "predi11","predi12", "predi13", "predi14", "predi15", "predi16", 
+"predi17", "predi18", "predi19", "predi20", "predi21", "predi22", 
+"predi23", "predi24", "predi25", "predi26", "predi27", "predi28", 
+"predi29", "predi30", "predi31", "predi32", "predi33", "predi34", 
+"predi35", "predi36", "predi37", "predi38", "predi39", "predi40", 
+"predi41", "predi42", "predi43", "predi44", "predi45", "predi46", 
+"predi47", "predi48", "predi49", "predi50", "predi51", "predi52", 
+"predi53", "predi54", "predi55", "predi56", "predi57", "predi58", 
+"predi59", "predi60", "predi61", "predi62", "predi63", "predi64", 
+"predi65", "predi66", "predi67", "predi68", "predi69")
+```
+
+## Funciones y medias
+
+```{r}
+# Defino funcion tasafallos
+
+tasafallos<-function(x,y) {
+  confu<-confusionMatrix(x,y)
+  tasa<-confu[[3]][1]
+  return(tasa)
+}
+
+auc<-function(x,y) {
+  curvaroc<-roc(response=x,predictor=y)
+  auc<-curvaroc$auc
+  return(auc)
+}
+
+# Se obtiene el numero de repeticiones CV y se calculan las medias por repe en
+# el data frame medias0
+
+repeticiones<-nlevels(factor(unipredi$Rep))
+unipredi$Rep<-as.factor(unipredi$Rep)
+unipredi$Rep<-as.numeric(unipredi$Rep)
+
+
+medias0<-data.frame(c())
+for (prediccion in listado)
+{
+  unipredi$proba<-unipredi[,prediccion]
+  unipredi[,prediccion]<-ifelse(unipredi[,prediccion]>0.5,"Yes","No")
+  for (repe in 1:repeticiones)
+  {
+    paso <- unipredi[(unipredi$Rep==repe),]
+    pre<-factor(paso[,prediccion])
+    archi<-paso[,c("proba","obs")]
+    archi<-archi[order(archi$proba),]
+    obs<-paso[,c("obs")]
+    tasa=1-tasafallos(pre,obs)
+    t<-as.data.frame(tasa)
+    t$modelo<-prediccion
+    auc<-suppressMessages(auc(archi$obs,archi$proba))
+    t$auc<-auc
+    medias0<-rbind(medias0,t)
+  }
+}
+```
+
+## Boxplots
+
+```{r}
+# Finalmente boxplot
+
+par(cex.axis=0.5,las=2)
+boxplot(data=medias0,tasa~modelo,col="pink",main="TASA FALLOS")
+
+# Para AUC se utiliza la variable auc del archivo medias0
+
+boxplot(data=medias0,auc~modelo,col="pink",main="AUC")
+
+# PRESENTACION TABLA MEDIAS
+
+library(dplyr)
+tablamedias<-medias0 %>%
+  group_by(modelo) %>%
+  summarize(tasa=mean(tasa))     
+
+tablamedias<-as.data.frame(tablamedias[order(tablamedias$tasa),])
+
+
+# ORDENACIÓN DEL FACTOR MODELO POR LAS MEDIAS EN TASA
+# PARA EL GRAFICO
+
+medias0$modelo <- with(medias0,
+                       reorder(modelo,tasa, mean))
+par(cex.axis=0.7,las=2)
+boxplot(data=medias0,tasa~modelo,col="pink", main='TASA FALLOS')
+
+```
+
+### AUC
+
+```{r}
+# PRESENTACION TABLA MEDIAS
+
+tablamedias2<-medias0 %>%
+  group_by(modelo) %>%
+  summarize(auc=mean(auc))     
+
+tablamedias2<-tablamedias2[order(-tablamedias2$auc),]
+
+
+# ORDENACIÓN DEL FACTOR MODELO POR LAS MEDIAS EN AUC
+# PARA EL GRAFICO
+
+medias0$modelo <- with(medias0,
+                       reorder(modelo,auc, mean))
+par(cex.axis=0.7,las=2)
+boxplot(data=medias0,auc~modelo,col="pink", main='AUC')
+```
+
+### Gráficos de apoyo
+
+```{r}
+
+unipredi<-cbind(predi1,predi2,predi3,predi4,predi5,predi6,predi7,predi8)
+# Esto es para eliminar columnas duplicadas
+unipredi<- unipredi[, !duplicated(colnames(unipredi))]
+# Añadir ensamblados
+unipredi$predi47<-(unipredi$logi+unipredi$xgbm+unipredi$svmLinear)/3
+unipredi$predi14<-(unipredi$logi+unipredi$svmPoly)/2
+unipredi$predi45<-(unipredi$logi+unipredi$gbm+unipredi$svmPoly)/3
+unipredi$predi46<-(unipredi$logi+unipredi$gbm+unipredi$svmRadial)/3
+
+# Me quedo con la primera repetición de validación cruzada para los análisis
+# A veces hay que poner Rep1 y otras veces Rep01, depende de cuantas repeticiones hemos pedido
+
+unigraf<-unipredi[unipredi$Rep=="Rep1",]
+# Correlaciones entre predicciones de cada algoritmo individual
+solos<-c("logi", "avnnet",
+         "rf","gbm",  "xgbm", "svmLinear",  "svmPoly",
+         "svmRadial")
+mat<-unigraf[,solos]
+matrizcorr<-cor(mat)
+matrizcorr
+library(corrplot)
+corrplot(matrizcorr, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45,cl.lim=c(0.7,1),is.corr=FALSE)
+
+library(ggplot2)
+
+qplot(svmRadial,logi,data=unigraf,colour=obs)+
+  geom_hline(yintercept=0.5, color="black", size=1)+
+  geom_vline(xintercept=0.5, color="black", size=1)+
+  theme_minimal()
+
+qplot(predi47,logi,data=unigraf,colour=obs)+
+  geom_hline(yintercept=0.5, color="black", size=1)+
+  geom_vline(xintercept=0.5, color="black", size=1)+
+  theme_minimal()
+
+qplot(gbm,svmPoly,data=unigraf,colour=obs)+
+  geom_hline(yintercept=0.5, color="black", size=1)+
+  geom_vline(xintercept=0.5, color="black", size=1)+
+  theme_minimal()
+
+```
+
+## Contrastes de hipótesis
+
+1º Comparación
+
+```{r}
+listamodelos<-c("logi","predi46")
+
+datacontraste<-medias0[which(medias0$modelo%in%listamodelos),]
+
+# Para Tasa de fallos
+
+res <- t.test(datacontraste$tasa ~datacontraste$modelo)
+res
+
+# Para auc
+
+res <- t.test(datacontraste$auc ~datacontraste$modelo)
+res
+```
+
+2º Comparación
+
+```{r}
+listamodelos<-c("logi","gbm")
+
+datacontraste<-medias0[which(medias0$modelo%in%listamodelos),]
+
+# Para Tasa de fallos
+
+res <- t.test(datacontraste$tasa ~datacontraste$modelo)
+res
+
+# Para auc
+
+res <- t.test(datacontraste$auc ~datacontraste$modelo)
+res
+```
+
+# BOXPLOTS
+
+```{r}
+as.data.frame("modelo" = c("XGBoost"), xgbo)
+```
+

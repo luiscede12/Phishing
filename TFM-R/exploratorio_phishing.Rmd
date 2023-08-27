@@ -1,0 +1,3253 @@
+---
+title: "Técnicas de machine learning para la detección de páginas web de phishing"
+description: |
+  Trabajo de fin de máster
+author:
+  - name: Luis Pérez García (DNI 32724256-V)
+    affiliation: Universidad Complutense de Madrid
+    affiliation_url: 
+date: "`r Sys.Date()`"
+output:
+    distill::distill_article:
+        highlight: kate
+        colorlinks: true
+        code_folding: false
+        toc: true            
+        toc_depth: 3     
+---
+
+```{r setup, include = FALSE}
+# Ajuste comunes de los chunk
+knitr::opts_chunk$set(fig.width = 9, fig.asp = 1, out.width = "9.50%",
+                      message = FALSE, warning = FALSE,
+                      echo = TRUE, res = 400)
+```
+
+# Librerías
+
+Cargamos la librerías que usaremos a lo largo de todo el trabajo.
+
+```{r}
+library(tidyverse)
+library(skimr)
+library(gridExtra)
+```
+
+# Datos
+
+```{r}
+phishing_bruto2 <- 
+  read.csv("dataset_full.csv")
+```
+
+
+# Exploración
+
+# Análisis exploratorio inicial
+
+Comenzaremos observando la estructura de nuestros datos y obteniendo una visión general de nuestras 
+variables, donde también nos centraremos en como se distribuyen los niveles de nuestra objetivo 
+(phishing).
+
+```{r}
+glimpse(phishing_bruto)
+```
+
+Como podemos ver a través de la función glimpse(), tenemos 88647 registros y 112 variables. Por otra 
+parte todas nuestras variables son números enteros (int) excepto una que es de tipo decimal (dbl): 
+time_response. Referente a su significado la mayoría de nuestras predictoras representan cantidades, 
+en este caso, de caracteres en una URL, dominio, directorio...
+De estas 112 variables tenemos una que se corresponde a la objetivo (phishing), y 
+la cual es indicativa de si la observación se corresponde a una web de phishing o no.
+
+Con la función skim() podemos obtener estadísticas básicas sobre nuestros datos 
+
+```{r}
+skim(phishing_bruto)
+```
+
+En una primera vista, podemos observar que en nuestras variables no tenemos ningún valor ausente. 
+De este modo, el `complete_rate` de nuestras variables es siempre 1. Por el otro lado, la función 
+también nos muestra diferentes estadísticos descriptivos de nuestras variables, como los percentiles, 
+la media o la desviación típica. Fijándonos en sus valores, y teniendo en cuenta que la mayoría de nuestras 
+variables hacen referencia a cantidades de caracteres o a tiempos de espera de una página web, 
+era de esperar que no tengamos demasiada dispersión en nuestros datos.
+
+Por último, podemos ver como está distribuída nuestra variable objetivo dentro de nuestro conjunto 
+de datos. **Proporciones globales**:
+
+```{r}
+phishing_bruto |> count(phishing) |> 
+  mutate(porc = n*9.50/sum(n))
+```
+
+Como podemos ver, nuestra variable objetivo es de tipo binario, tomando valores 0 y 1. En este caso, 
+el 1 nos indica que la URL en cuestión se corresponde a una web destinada al phishing y cuando toma 
+el valor 0, que esto no es así. Si nos fijamos en sus proporciones, vemos que en el 65,4% de los 
+registros, la página web no es de phishing, y en el 34,6% sí lo es. 
+Por otra parte, esta variable representa una categoría, por lo que antes de comenzar con nuestra 
+metodología, es conveniente transformar esta variable previamente a factor para poder realizar un 
+correcto análisis descriptivo con nuestras variables predictoras.
+
+```{r}
+phishing_bruto2 <-
+  phishing_bruto |> mutate(phishing = as_factor(phishing))
+```
+
+Procedemos a analizar las variables dividiéndolas en grupos según su naturaleza. Para esta fase de 
+nuestra metodología, usaremos todos los registros, es decir, el dataset phishing_bruto.
+
+# Variables de URL
+
+Primero analizaremos las variables que reflejan datos acerca de la propia URL.
+
+## Variable qty_dot_url
+
+Esta variable representa la cantidad de puntos (.) presentes en la URL. 
+
+```{r}
+phishing_bruto|> group_by(qty_dot_url) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+phishing_bruto |> count(qty_dot_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Podemos ver en un primer momento que únicamente 1 nivel de los 23 posibles abarca 
+más del 60% de los registros.
+Por otro lado, y fijándonos en sus proporciones con la variable objetivo por cada 
+valor que toma la variable, vemos que la menor probabilidad de phishing se produce 
+en una cantidad de puntos en la URL igual a 2 (lo que suele ser habitual). Dicha 
+proporción es del 23% de los datos que toman ese valor y como hemos podido ver antes, 
+es menor a las proporciones globales de nuestra objetivo en cuanto a phishing = 1 (34%).
+También podemos ver que a medida que el valor es mayor, las probabilidades de phsihing 
+aumentan en gran medida, hasta llegar a ser del 9.50% en aquellas cantidades de puntos 
+más elevadas.
+Podemos visualizar en histograma, como se distribuye nuestra variable objetivo 
+en base a esta variable.
+
+```{r}
+# Representación gráfica
+ggplot(phishing_bruto, aes(x = qty_dot_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (.) en la URL", 
+       x = "Nº de (.)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 50000, 9.5000)) +
+  scale_x_continuous(breaks =  seq(0, 26, 2)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Podemos comporbar que la mayoría de los registros se concentran en el valor 2, donde 
+habíamos visto que la proporción de webs legítimas (phishing = 0) es superior que 
+a la del conjunto de datos. Por otro lado, vemos que cuando la cantidad de puntos 
+en la URL es de 1, existe más proporción de webs de phising (47%), por lo que en este 
+caso difiere con el patrón observable de que cuantos más puntos tenga la observación, 
+mayor probabilidad habrá de que la web sea de phishing.
+Por último, en aquellos niveles donde observábamos una proporción de phishing cercana 
+al 9.50%, no contamos con demasiados registros, lo que parece ser lógico ya que no 
+suele ser lo habitual recibir un enlace web con unos 20 puntos presentes.
+Con todo esto, sí que hemos podido observar ciertos patrones presentes en esta variable, 
+los cuales también esperamos que puedan ser **detectados por nuestros posteriores modelos de machine learning**.
+
+## Variable qty_hyphen_url
+
+Variable representativa del número de guiones (-) en la URL.
+
+```{r}
+phishing_bruto |> group_by(qty_hyphen_url) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+phishing_bruto |> count(qty_hyphen_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+* Visualización:
+
+```{r}
+# Representación
+ggplot(phishing_bruto, aes(x = qty_hyphen_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de guiones en la URL", 
+       x = "Nº Guiones", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Una vez más podemos ver que la mayoría de los registros se encuentran en un solo nivel, 
+en este caso cuando la cantidad de los guiones en la url es 0, con más del 82% de los 
+registros. Atendiendo a las proporciones de nuestra variable objetivo en base a este valor, vemos que vuelven a tener una menor presencia las webs de phishing que en el conjunto global de nuestros datos. Por otro lado, Cuando hay más de un guión en la URL, la proporción de páginas web de phishing es superior, con unas proporciones superiores al 65%. Existen también ciertos niveles donde la proporción de legítimas es superior, pero como sucedía con la variable anterior, existen muy pocos registros cuando ya contamos con un número elevado de guiones.
+
+Para visualizar de mejor manera la tendencia anteriormente comentada, podemos representar la variable 
+sin incluír aquel valor donde se concentran la mayoría de nuestros datos (0).
+
+```{r}
+ggplot(phishing_bruto |> filter(qty_hyphen_directory > 0), aes(x = qty_hyphen_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (-) > 0 en la URL", 
+       x = "Nº de (-)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+De esta manera, podemos apreciar de forma más clara que para un número de guiones más elevada, 
+la presencia de webs de phishing es muy superior, aunque también existen ciertos niveles con 
+aún menos registros, que también vuelven a ser más frecuentas las webs legítimas.
+
+Una vez llegados a este punto, y viendo que las demás variables referidas a cantidades de caracteres 
+en las URL's podrían seguir las mismas tendencia en base a los dos tipos de webs presentes como categorías en nuestra variable objetivo, podriamos aplicar la misma técnica exploratoria de forma conjunta para el resto de ellas, y continuando con el método anterior, sacarconclusiones acerca de posibles patrones que podamos identificar en nuestras variables.
+
+## Variables restantes de tipo URL
+
+Diccionario de las variables de
+
+* qty_underline_url: cantidad de (_) en URL
+* qty_slash_url: cantidad de (/) en URL
+* qty_questionmark_url: de cantidad (?) en URL
+* qty_equal_url: cantidad (=) en URL
+* qty_at_url: cantidad de (@) en URL
+* qty_and_url: cantidad de (&) en URL
+* qty_exclamation_url: cantidad de (!) en URL
+* qty_space_url: cantidad de ( ) en URL
+* qty_tilde_url: cantidad de (~) en URL
+* qty_comma_url: cantidad de (,) en URL
+* qty_plus_url: cantidad de (+) en URL
+* qty_asterisk_url: cantidad de (*) en URL
+* qty_hashtag_url: cantidad de (#) en URL
+* qty_dollar_url: cantidad de ($) en URL
+* qty_percent_url: cantidad de (%) en URL
+* qty_tld_url: longitud de top-level-domain
+* length_url: longitud de URL
+* email_in_url: email presente en URL
+* url_google_index: URL indexada en Google o no
+* url_shortened: Si la URL está acortada o no
+
+Realizaremos nuestro análisis en grupos de variables que representan cantidades de caracteres 
+específicos (qty), y después trataremos las demás variables URL que presentan una naturalez distinta, 
+de forma más individual.
+
+### URL qty grupo 1
+
+Análisis cuantitativo
+
+```{r}
+# qty_underline_url
+phishing_bruto |> group_by(qty_underline_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_underline_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_slash_url
+phishing_bruto |> group_by(qty_slash_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_slash_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_questionmark_url
+phishing_bruto |> group_by(qty_questionmark_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_questionmark_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_equal_url
+phishing_bruto |> group_by(qty_equal_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_equal_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Visualización:
+
+```{r}
+# qty_underline_url
+ggplot(phishing_bruto, aes(x = qty_underline_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (_) en la URL", 
+       x = "Nº de (_)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_slash_url
+ggplot(phishing_bruto, aes(x = qty_slash_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (/) en la URL", 
+       x = "Nº de (/)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos a variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_slash_url > 0 & qty_slash_url < 15), aes(x = qty_slash_url)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (/) > 0 en la URL", 
+       x = "Nº de (/)", y = "Recuento", fill = "Phishing") +
+  geom_text(aes(label = ..count..), stat = "count", vjust = -0.2, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_questionmark_url
+ggplot(phishing_bruto, aes(x = qty_questionmark_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (?) en la URL", 
+       x = "Nº de (?)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_equal_url
+ggplot(phishing_bruto, aes(x = qty_equal_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (=) en la URL", 
+       x = "Nº de (=)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_equal_url > 0), aes(x = qty_equal_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (=) > 0 en la URL", 
+       x = "Nº de (=)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Conclusiones:
+
+* `qty_underline_url`: La distribución con la objetivo es muy similar a la variable de número de 
+guiones. Cuando las "barra bajas" son 0 en la URL, la proporción de páginas web legítimas es 
+ligeramente superior a la global, y cuando es mayor que 0, la proporción de phishing es considerablemente 
+superior y contamos con muy pocos registros.
+
+* `qty_slash_url`: Volvemos a notar una correlación positiva entre la presencia de páginas web de 
+phishing y el número de (/) presentes en la URL.
+
+* `qty_questionmark_url`: Apenas podemos distinguir registros diferentes de 0, ya que en dicho 
+valor se concentra más del 90% de los datos. Sin embargo, una vez podemos detectar que en aquellos registros 
+con cada vez más interrogantes, el phishing está presente en casi todas las observaciones.
+
+* `qty_equal_url`: Volvemos a encontrar el mismo tipo de tendencia.
+
+En términos generales, estas variables representativas de cantidades de caracteres (en este caso en las URL), 
+presentan unas distribuciones muy similares: Una gran concentración de los registros totales en unos pocos valores y 
+una cola pesada de nuestras distribuciones en la derecha. Vemos que se tratan de distribuciones de tipo exponencial, 
+donde si tenemos en cuenta nuestra variable objetivo, a medida que avanzamos en el número de caracteres, las webs 
+de tipo phishing (phishing = 1), tiene cada vez más peso sobre los datos.
+
+### URL qty grupo 2
+
+Análisis cuantitativo:
+
+```{r}
+# qty_at_url
+phishing_bruto |> group_by(qty_at_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_at_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_and_url
+phishing_bruto |> group_by(qty_and_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_and_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_exclamation_url
+phishing_bruto |> group_by(qty_exclamation_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_exclamation_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_space_url
+phishing_bruto |> group_by(qty_space_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_space_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Visualización:
+
+```{r}
+# qty_at_url
+ggplot(phishing_bruto, aes(x = qty_at_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (@) en la URL", 
+       x = "Nº de (@)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_and_url
+ggplot(phishing_bruto, aes(x = qty_and_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (&) en la URL", 
+       x = "Nº de (&)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_exclamation_url
+ggplot(phishing_bruto, aes(x = qty_exclamation_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (!) en la URL", 
+       x = "Nº de (!)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_exclamation_url > 0), aes(x = qty_equal_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (!) > 0 en la URL", 
+       x = "Nº de (!)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_space_url
+ggplot(phishing_bruto, aes(x = qty_space_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de espacios en la URL", 
+       x = "Nº de espacios", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_space_url > 0), aes(x = qty_equal_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de ( ) > 0 en la URL", 
+       x = "Nº de ( )", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+En relación a este grupo de variables, volvemos a encontrar tendencias casi idénticas 
+que con las anteriores. En este caso, podemos ver que en el valor más frecuente que 
+toman los datos, las proporciones en relación a nuestra variable objetivo son casi 
+idénticas a las globales (34% de phishing  = 1). 
+Por el otro lado, vemos otra vez el mismo comportamiento, a medida que encontramos 
+más numeros de caracteres, más proporción de phishing se observa (de manera brusca). 
+Esto se puede ver de manera muy clara en las variables de qty_exclamation_url y 
+qty_space_url, donde hemos descartado el valor más frecuente para ver el comportamiento 
+de aquellos niveles que a pesar de tener muy pocos registros, albergan información 
+muy relevante para nuestro futuros modelos de clasificación.
+
+### URL qty grupo 3
+
+Análisis cuantitativo:
+
+```{r}
+# qty_tilde_url
+phishing_bruto |> group_by(qty_tilde_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_tilde_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_comma_url
+phishing_bruto |> group_by(qty_comma_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_comma_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_plus_url
+phishing_bruto |> group_by(qty_plus_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_plus_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_asterisk_url
+phishing_bruto |> group_by(qty_asterisk_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_asterisk_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Visualización:
+
+```{r}
+# qty_tilde_url
+ggplot(phishing_bruto, aes(x = qty_tilde_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (~) en la URL", 
+       x = "Nº de (~)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_tilde_url > 0), aes(x = qty_tilde_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (~) > 0 en la URL", 
+       x = "Nº de (~)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_comma_url
+ggplot(phishing_bruto, aes(x = qty_comma_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (,) en la URL", 
+       x = "Nº de (,)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_comma_url > 0), aes(x = qty_comma_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (,) > 0 en la URL", 
+       x = "Nº de (,)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_plus_url
+ggplot(phishing_bruto, aes(x = qty_plus_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (+) en la URL", 
+       x = "Nº de (+)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_plus_url > 0), aes(x = qty_plus_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (+) > 0 en la URL", 
+       x = "Nº de (+)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+En términos generales vemos una vez más unos patrones similares, aunque si nos fijamos 
+en la variable de número de (+) en la URL, si que podemos ver que a pesar de no encontrarnos 
+en su valor con más frecuencia de datos, y cuando dicha cantidad es concetramente de 1, 
+las proporciones con la objetivo son similares a las de aquel nivel con la mayoría de registros, 
+y por lo tanto, a las globales. Con esto podemos intuir que, a pesar de ver unas tendencias 
+generales de comportamiento en estas variables puramente representativas de cantidades de caracteres 
+(en este caso en las URL's), sí existen determinadas diferencias en función de sobre que tipo de 
+caracter estamos tratando. Es decir, antes hemos podido observar en la variable de cantidad de 
+puntos, que existe una menor curtosis y que el valor más frecuente se produce en el 2.
+Este hecho está fuertemente relacionado con las frecuencias que tienden a tener determinados caracteres 
+en las URL, donde por ejemplo en lo que respeta a puntos, lo más habitual suele ser una cantidad de 2, 
+aunque sí podemos encontrarnos con 1 o 3, 4... Sin embargo, hay determinados caracteres que no son nada 
+habituales en muchos enlances que te llevan a webs principales de bancos, empresas u otro tipo 
+de propietarios webs en los que son habituales los intentos de este tipo de estafas.
+Por ejemplo, si nos fijamos en este tipo de URL's de páginas webs, rara vez podremos 
+observar alguna coma, o algún símbolo de +...
+
+### URL qty grupo 4
+
+Análisis cuantitativo:
+
+```{r}
+# qty_hashtag_url
+phishing_bruto |> group_by(qty_hashtag_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_hashtag_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_dollar_url
+phishing_bruto |> group_by(qty_dollar_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_dollar_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_percent_url
+phishing_bruto |> count(qty_percent_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_tld_url
+phishing_bruto |> group_by(qty_tld_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_tld_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+
+Visualización:
+
+```{r}
+# qty_hashtag_url
+ggplot(phishing_bruto, aes(x = qty_hashtag_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (#) en la URL", 
+       x = "Nº de (#)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_dollar_url
+ggplot(phishing_bruto, aes(x = qty_dollar_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de ($) en la URL", 
+       x = "Nº de ($)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_dollar_url > 0), aes(x = qty_dollar_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de ($) > 0 en la URL", 
+       x = "Nº de ($)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_percent_url
+ggplot(phishing_bruto, aes(x = qty_percent_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (%) en la URL", 
+       x = "Nº de (%)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_tld_url
+ggplot(phishing_bruto, aes(x = qty_tld_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de caracteres de dominio en la URL", 
+       x = "Nº de caracteres de dominio", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+En este último grupo de variables referentes a cantidades de caracteres en URL's, vemos campos como 
+qty_hashtag_url, qty_dollar_url o qty_percent_url donde casi el 9.50% de los registros se encuentran en un único valor, y en el cual las proporciones de webs legítimas de y de phishing son idénticas a las vistas en el conjunto de datos. Por otro lado, también encontramos un comportamiento más relacionado con el tipo de caracter en cuestión, en este caso en la 
+variable de nº de caracteres de dominio. En dicha variable vemos que el valor más frecuente es el 1, donde las proporciones en relación con la objetivo son muy similares a las globales. Por otra parte, cuando esta variable toma los valores 0 o superior a 1, nuevamente a parte de tener muy pocos registros, vemos que la presencia de las webs de phishing es muy superior en comparación a las tendencias globales.
+En conclusión, encontramos un comportamiento muy similar en este tipo de variables de cantidad, aunque en ciertos casos, hay que considerar el tipo de caracter a tratar, y el contexto en el que se está usando.
+
+### Variable length_url
+
+Esta variable define la longitud de la URL, y no se trata de una variable que representa catidad 
+de caracteres de un objeto en concreto como las anteriores.
+
+```{r}
+# Anañlisis cuantitativo
+phishing_bruto |> count(length_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(length_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+
+# Visualización
+ggplot(phishing_bruto |> filter(length_url > 30), aes(x = length_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por longitud de la URL", 
+       x = "Longitud de la URL", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_x_continuous(breaks = seq(0, 4000, 500)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+```
+
+Vemos por su distribución que se trata de una variable con una distribución 
+considerablemente asimétrica, con una cola pesada a la derecha. Por otra parte, 
+a partir de un valor de 500, apenas podemos visualizar registros, y parece que 
+todos ellos se tratan de páginas web de phishing:
+
+```{r}
+phishing_bruto |> filter(length_url > 30) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+
+phishing_bruto |> summarise(min = min(length_url), max = max(length_url))
+
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto2 |> filter(length_url > 30 & length_url < 700), aes(x = length_url)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por longitud de url > 30", 
+       x = "Longitud de url", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Tenemos un máximo en esta variable considerablemente elevado, y una vez más, podemos 
+ver que la proporción de webs de phishing es exponencialmente creciente, llegando a un 
+punto donde únicamente encontramos observaciones que se componene de este tipo de páginas web.
+
+
+### Variable email_in_url
+
+```{r}
+# Anañlisis cuantitativo
+phishing_bruto |> count(email_in_url) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(email_in_url) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+
+# Visualización
+ggplot(phishing_bruto, aes(x = email_in_url)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por email en la URL", 
+       x = "Email en URL", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+      geom_text(aes(label = ..count..), stat = "count", vjust = -0.2, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Tenemos una variable tipo binaria que nos indica con el valor 0 que no existe un email en la URL, y 
+con un 1 que sí existe. De este modo, en este caso nos encontramos con un campo puramente cualitativo, 
+que como hemos visto antes, está codificado como variable numérica.
+Centrandonos en sus distribución por sus niveles, vemos que la mayoría de datos se concentran en el 0, donde la distribución de la objetivo es similar a la global. En este caso la información relevante para nuestros futuros 
+modelos la encontramos en cuando sí existe email en la URL, ya que el porcentaje de encontrarnos una 
+web con phishing es de casi el 9.50%. Podríamos llegar a considerar que el 1.8% de registros totales que se encuentran en el nivel 1 es muy poco representativo como para ser tenido en cuenta en los posteriores modelos, y por lo consiguiente, no tenerla en cuenta para evitar una sobreparametrización (sobreajuste). Sin embargo, teniendo en cuenta la toería central del límite, usaramos un número de observaciones igual a 9.50 como referencia de inclusión de categorías en variables puramente cualitativas como esta. En este caso, tenemos 1625 observaciones en la categoría que nos indica que sí existe email en la url, por lo que no haremos ninguna modificación en este sentido.
+Por lo tanto, a la hora de realizar nuestros modelos, deberemos **convertir esta variable en factor**, para que de esta forma sea interpretada correctamente por los algoritmos en cuestión.
+
+### Variable url_google_index
+
+```{r}
+# Análisis cuantitativo
+phishing_bruto |> count(url_google_index) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(url_google_index) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+
+# Visualización
+ggplot(phishing_bruto, aes(x = url_google_index)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por URL indexada en Google", 
+       x = "URL Indexada en Google", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+      geom_text(aes(label = ..count..), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Esta variable nos indica si la url en cuestión está indexada en google o no. 
+Observando los valores que puede tomar y ya por la propia naturaleza de la 
+variable, podemos deducir que tenemos un caso similar anterior, donde encontramos 
+una variable cualitativa codificada como si fuese numérica. Por otra parte, si 
+nos fijamos en sus niveles, vemos que puede tomar el valor -1. En este caso, 
+dicho valor nos dice que la caracerística en cuestión (si la url está indexada 
+en google o no), no se puede aplicar a ciertas observaciones o que se desconoce esa información (90 en este caso). 
+Por lo tanto, el 0 nos indica que se podría indexar la url pero no lo está, el 1 
+que sí está indexada, y el -1 que no se podría en este caso o dicha información 
+es desconocida. Si nos fijamos en su distribución, vemos que casi el 9.50% de los datos 
+se encuentran en aquel nivel donde la url no está indexada en google, y donde la objetivo 
+se distribuye como en el conjunto total de los datos disponibles. Cuando toma el valor 1
+vemos que la proporción de webs de phishing es mucho menor, del 9.5% aproximadamente, 
+y cuando toma el -1, únicamente encontramos webs legítimas. Sin embargo, y como hemos 
+espicificado a la hora de decidir si mantener determinadas categorías, no inlcuiríamos en este 
+caso el nivel -1, ya que no llega a las 9.50 observaciones que establecen el límite de 
+nuestra representatividad.
+
+### Variable url_shortened
+
+```{r}
+# Anañlisis cuantitativo
+phishing_bruto |> count(url_shortened) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(url_shortened) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+
+# Visualización
+ggplot(phishing_bruto, aes(x = url_shortened)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por URL acortada", 
+       x = "URL acortada", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+      geom_text(aes(label = ..count..), stat = "count", vjust = -0.2, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Esta variable indica si la URL ha sido acortada o no. Por lo tanto, tenemos otra variable que debería ser convertida a factor posteriormente. En cuanto a sus proporciones de nuestra objetivo en función de los niveles que toma, vemos que cuando la variable es 1, y por lo tanto, la URL sí está acortada, la proporción de webs de phishing es casi del 9.50%. Este nivel nos aporta una información muy relevante en comparación con el nivel 0, donde las proporciones son identicas a las globales. 
+De este modo, y también teniendo en cuenta que tenemos más de 9.50 registros en aquel nivel menos frecuente, **usremos esta variable como un factor**.
+
+# Variables de dominio
+
+Continuando con la estructura anterior, pasaremos a analizar las variables de tipo dominio:
+
+qty_dot_domain: cantidad de (.) en dominio
+qty_hyphen_domain: cantidad de (-) en dominio
+qty_underline_domain: cantidad de (_) en dominio
+qty_slash_domain: cantidad de (/) en dominio
+qty_questionmark_domain: cantidad de (?) en dominio
+qty_equal_domain: cantidad de (=) en dominio
+qty_at_domain: cantidad de (@) en dominio
+qty_and_domain: cantidad de (&) en dominio
+qty_exclamation_domain: cantidad de (!) en dominio
+qty_space_domain: cantidad de ( ) en dominio
+qty_tilde_domain: cantidad de (~) en dominio
+qty_comma_domain: cantidad de (,) en dominio
+qty_plus_domain: cantidad de (+) en dominio
+qty_asterisk_domain: cantidad de (*) en dominio
+qty_hashtag_domain: cantidad de (#) en dominio
+qty_dollar_domain: cantidad de ($) en dominio
+qty_percent_domain: cantidad de (%) en dominio
+qty_vowels_domain: cantidad de vocales en dominio
+domain_length: longitud de dominio
+domain_in_ip: dominio en formato de dirección IP
+server_client_domain: dominio contiene las palabras clave "cliente" o "servidor"
+domain_spf: dominio tiene SPF
+domain_google_index: dominio indexado en google
+time_domain_activation: tiempo (en dias) de la activación del dominio
+time_domain_expiration: tiempo (en dias) de la expiración del dominio
+
+### Dominio qty grupo 1
+
+Análisis cuantitativo
+
+```{r}
+# qty_dot_domain
+phishing_bruto |> group_by(qty_dot_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_dot_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_hyphen_domain
+phishing_bruto |> group_by(qty_hyphen_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_hyphen_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+
+# qty_underline_domain
+phishing_bruto |> group_by(qty_underline_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_underline_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_slash_domain
+phishing_bruto |> group_by(qty_slash_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_slash_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_questionmark_domain
+phishing_bruto |> group_by(qty_questionmark_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_questionmark_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_equal_domain
+phishing_bruto |> group_by(qty_equal_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_equal_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Visualización: 
+
+```{r}
+# qty_dot_domain
+ggplot(phishing_bruto, aes(x = qty_dot_domain)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (.) en dominio", 
+       x = "Cantidad de (.)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_dot_domain > 5), aes(x = qty_dot_domain)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (.) > 5 en dominio", 
+       x = "Nº de (.)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_hyphen_domain
+ggplot(phishing_bruto, aes(x = qty_hyphen_domain)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (-) en dominio", 
+       x = "Cantidad de (-)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_hyphen_domain > 3), aes(x = qty_hyphen_domain)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (-) > 3 en dominio", 
+       x = "Nº de (-)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_underline_domain
+ggplot(phishing_bruto, aes(x = qty_underline_domain)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (_) en dominio", 
+       x = "Cantidad de (_)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_underline_domain > 0), aes(x = qty_underline_domain)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (_) > 0 en dominio", 
+       x = "Nº de (-)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_slash_domain
+ggplot(phishing_bruto, aes(x = qty_slash_domain)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (/) en dominio", 
+       x = "Cantidad de (/)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_questionmark_domain
+ggplot(phishing_bruto, aes(x = qty_questionmark_domain)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (?) en dominio", 
+       x = "Cantidad de (?)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_equal_domain
+ggplot(phishing_bruto, aes(x = qty_equal_domain)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (=) en dominio", 
+       x = "Cantidad de (=)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Podemos ver un comportamiento similar al visto en los grupos de variables de cantidades 
+referentes a la URL. Volvemos a encontrarnos con unas distribuciones con colas muy pesadas 
+a la derecha, donde la mayoría de los datos se concentran en unos pocos valores. En base a 
+las proporciones, vemos una vez más que a partir de cierto número de tipos de caracter, 
+la frecuencia de las páginas web de phishing aumenta exponencialmente (a partir del 5 en el 
+caso de los puntos en el dominio).
+Sin embargo, en este grupo de variables, nos encontramos con 3 de ellas que presentan un solo 
+valor en su distribución, el 0, y donde sus proporciones de tipos de webs son exactamente iguales 
+a las globales. De este modo, esperamos que el comportamiento característico que hemos visto también 
+en las variables anteriores, sea detectado por nuestros futuros modelos, y en lo que se 
+refiere a las variables numéricas con un único valor, lo mejor sería **eliminarlas** ya 
+que no nos aportan información determinante para ayudar en la clasificación.
+
+### Dominio qty grupo 2
+
+Análisis cuantitativo: 
+
+```{r}
+# qty_at_domain
+phishing_bruto |> group_by(qty_at_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_at_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_and_domain
+phishing_bruto |> group_by(qty_and_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_and_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_exclamation_domain
+phishing_bruto |> group_by(qty_exclamation_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_exclamation_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_space_domain
+phishing_bruto |> group_by(qty_space_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_space_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_tilde_domain
+phishing_bruto |> group_by(qty_tilde_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_tilde_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_comma_domain
+phishing_bruto |> group_by(qty_comma_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_comma_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+únicamente observando los valores que toman estas variables, y como se distribuyen en función con la objetivo, no pasaremos a analizarlas visualmente.
+Es decir, vemos que únicamente toman un valor, excepto en el caso de qty_at_domain, donde solo tiene 
+un registro en el otro que presenta. Las proporciones con la objetivo son idénticas a las globales por lo que, como sucedía con alguna de las del grupo anteiror, no nos aportan una información diferencial para ayudar a nuestro modelo a detectar las webs de phishing. De este modo, **las eliminaremos** de nuestro análisis.
+
+### Dominio qty grupo 3
+
+Análisis cuantitativo:
+
+```{r}
+# qty_plus_domain
+phishing_bruto |> group_by(qty_plus_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_plus_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_asterisk_domain
+phishing_bruto |> group_by(qty_asterisk_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_asterisk_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_hashtag_domain
+phishing_bruto |> group_by(qty_hashtag_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_hashtag_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_dollar_domain
+phishing_bruto |> group_by(qty_dollar_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_dollar_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_percent_domain
+phishing_bruto |> group_by(qty_percent_domain) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_percent_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_vowels_domain
+phishing_bruto |> count(qty_vowels_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> count(qty_vowels_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Con las 5 primeras de nuestro último grupo de variables tipo qty_domain, sucede lo mismo con las 
+anteriores. Por lo tanto, **eliminaremos** las variables qty_plus/asterisk/hashtag/dollar/percent_domain.
+
+Visualizamos la última de ellas:
+
+```{r}
+# qty_vowels_domain
+ggplot(phishing_bruto, aes(x = qty_vowels_domain)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de vocales en dominio", 
+       x = "Cantidad de vocales", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 30000, 5000)) +
+  scale_x_continuous(breaks = seq(0, 60 ,9.5)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Esta variable nos indica el número de vocales presentes en el dominio.
+
+* `qty_vowels_domain`: Vemos que es una variable con una distribución 
+considerablemente asimétrica, donde la mayoría registros se concentrar entre 
+los valores 2 y 9 (> 65% de proporción sobre el total) y donde observamos un valor 
+máximo de cantidad de vocales considerablemente elevado. Por otra parte, parece 
+que a partir de una cantidad de 15 vocales aproximadamente, las webs de phishing 
+son mucho más frecuentes (una vez más):
+
+```{r}
+phishing_bruto |> summarise(min = min(qty_vowels_domain),
+                            max = max(qty_vowels_domain))
+phishing_bruto |> filter(qty_vowels_domain >= 15) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+```
+
+Como era de esperar, tenemos un comportamiento que sigue los patrones anteriores en 
+base a nuestra variable objetivo. 
+
+### Variable domain_length
+
+Esta variable indica la longitud del dominio en caracteres:
+
+```{r}
+phishing_bruto |> count(domain_length) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+ggplot(phishing_bruto, aes(x = domain_length)) + 
+  geom_density(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por longitud de dominio", 
+       x = "Longitud de dominio", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_x_continuous(breaks = seq(0, 250, 25)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Vemos que se trata de una variable con una distribución muy asimétrica, con una 
+cola pesada a la derecha. La mayoría de datos se concentran entre los valores 
+13 y 21 aproximadamente.
+
+```{r}
+phishing_bruto |> dplyr::select(domain_length) |> 
+  summarise(min = min(domain_length), max = max(domain_length))
+```
+
+Tenemso un máximo de longitud de dominio muy elevado. Observando el gráfico 
+de densidad, vemos que a partir del valor 50, a parte de tener muy pocos datos, 
+casi la totalidad de registros se corresponden a webs de phishing.
+
+```{r}
+phishing_bruto |> filter(domain_length >= 50) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+```
+
+Una vez más vemos un comportamiento similar, el cual será útil para detectar este 
+tipo de webs.
+
+### Variable domain_in_ip
+
+Indica si el dominio está en formato de dirección ip
+
+```{r}
+# Anañlisis cuantitativo
+phishing_bruto |> count(domain_in_ip) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(domain_in_ip) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+
+# Visualización
+ggplot(phishing_bruto, aes(x = domain_in_ip)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por formato ip en dominio", 
+       x = "Formato ip en dominio", y = "Recuento", fill = "Phishing") +
+    geom_text(aes(label = ..count..), stat = "count", vjust = -0.4, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Nos volvemos a encontrar una variable puramente cualitativa (binaria), la cual nos indica con 
+un valor de 1 que el dominio está en formato de dirección de ip, y con 0 que no lo 
+está. Si nos fijamos en la distribución a través de sus dos niveles, vemos que casi 
+el 9.50% de los datos se concentran en el 0, donde las proporciones de los tipos de webs 
+son idénticas a las del conjunto de datos. En este caso la diferenciación la encontramos 
+en el nivel 1, donde la proporción de webs de phishing es superior al 90%. Por lo tanto, 
+teniendo en cuenta que tiene más de 9.50 observaciones en dicho nivel y que a su vez nos 
+aporta información relevante, **convertiremos esta variable en factor** para ser utilizada 
+en nuestros modelos.
+
+### Variable server_client_domain
+
+Indica si el dominio contiene las palabras clave "cliente" o "servidor".
+
+```{r}
+# Anañlisis cuantitativo
+phishing_bruto |> count(server_client_domain) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(server_client_domain) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+
+# Visualización
+ggplot(phishing_bruto, aes(x = server_client_domain)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por palabras clave cliente o servidor en dominio", 
+       x = "Palabras clave cliente o servidor en dominio", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Volvemos a tener otra variable cualitativa codificada como númerica. En este caso, 
+a pesar de tener más de 9.50 observaciones en el nivel menos frecuente, sus proporciones 
+con la objetivo no reflejan información diferenciadora que nos pueda ser útil para 
+nuestros modelos predictivos. En ambos niveles las proporciones de webs de phishing son muy 
+similares a las globales y entre ellas, por lo que podríamos  **prescindir de esta variable**.
+
+### Variable domain_spf
+
+Indica si el dominio tiene SPF (Sender Policy Framework).
+
+```{r}
+# Anañlisis cuantitativo
+phishing_bruto |> count(domain_spf) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(domain_spf) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+
+# Visualización
+ggplot(phishing_bruto, aes(x = domain_spf)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por SPF en dominio", 
+       x = "SPF en dominio", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+En este tipo de variable puramente cualitativa, volvemos a tener un tercer nivel (-1),
+que nos indica que la característica no puede ser aplicada o que se desconoce dicha 
+información. Vemos que la mayoría de los registros en esta variable se concentran en el 
+0, el cual indica que el dominio no tiene SPF (aunque podría tenerlo). Dicho nivel 
+presenta unas proporciones de phishing ligeramente inferiores a las globales, 
+mientras que en los otros dos niveles, las proporciones son superiores (cercanas al 
+50%). Todos **los niveles** de esta variable **nos pueden ser de gran utilidad**, teniendo en 
+cuenta que tenemos un número de observaciones considerablemente representativos y que 
+las proporciones con la objetivo nos muestran información determinante.
+
+### Variable domain_google_index
+
+Indica si el dominio está indexado en google.
+
+```{r}
+phishing_bruto |> count(domain_google_index) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> group_by(domain_google_index) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+```
+
+Una vez más, tenemos presente el nivel -1 que indica que la característica de 
+si el dominio está indexado o no, no se puede aplicar a determinadas observaciones 
+(88 en este caso). Como no llegamos a un número de observaciones de 9.50, no tendremos 
+en cuenta este nivel para nuestros modelos.
+Por otra parte, vemos que casi el 9.50% de los datos se concentran en el nivel 0, 
+donde se encuentran aquellas webs cuyo dominio no está indexado en google. Atendiendo 
+al nivel 1, vemos que tenemos 267 observaciones y que las proporciones con la 
+objetivo indican una menor presencia de webs de phishing que en el conjunto total 
+de los datos. Por lo tanto, únicamente tendremos en cuenta estos dos últimos niveles 
+de esta **variable cualitativa**.
+
+### Variable time_domain_activation y time_domain_expiration
+
+* time_domain_activation
+
+```{r}
+# Anañlisis cuantitativo
+phishing_bruto |> count(time_domain_activation) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(time_domain_activation) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> summarise(min = min(time_domain_activation),
+                            max = max(time_domain_activation))
+```
+
+Fijándonos primeramente en los valores que puede tomar la variable, vemos que el valor
+mínimo es el -1. En este caso, el cual nos vuelve a indicar que la característica 
+en cuestión (tiempo de activación del dominio), no se aplica a determinadas observaciones.
+Considerando que nos encontramos con este indicador dentro de una variable númerica, 
+lo ideal sería **desglosar esta información**. Es decir, lo conveniente en este caso 7
+sería crear una variable en función de esta información que informe primero si la 
+característica se puede dar o no: variable cualitativa binaria (1, 0). Y, por el otro lado, 
+tener esta variable como referencia en el caso de que sí se pueda dar dicha característica. 
+De esta forma, si la característica no se puede dar (0 en la variable binaria), el valor de 
+nuestra nueva variable se multiplica con la numérica que indica la cantidad y de este modo 
+se anularía esta última. Mientras que, si se puede dar la característica, el modelo puede tomar 
+el 1 de nuestro nuevo factor para que se tome en cuenta el valor que indica la cantidad de nuestra 
+variable original.
+
+```{r}
+# Visualización
+ggplot(phishing_bruto, aes(x = time_domain_activation)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por tiempo de la activación del dominio", 
+       x = "Días", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  scale_x_continuous(breaks = seq(-1, 15000, 3000)) +
+  theme_minimal()
+```
+
+Observando el gráfico de densidad, podemos ver que a partir de un tiempo de activación 
+del dominio de unos 3500 días aproximadamente, las proporciones de páginas web de 
+legítimas comienzan a tener cada vez mayor presencia, observando a su vez un punto de 
+corte donde acaban superando en número a aquellas webs de phishing. Por otro lado, 
+vemos que en los valores más altos y a partir de un tiempo de unos 8000 días aproximadamente, 
+únicamente se distinguen webs legítimas, por lo que en este caso observamos un comportamiento 
+similar en distribución pero al revés con la objetivo. Es decir, a medida que aumentamos 
+en el número de días, la proporción de phishing desciende mientras que cada vez es más 
+frecuente observar webs legítimas.
+
+```{r}
+phishing_bruto |> filter(time_domain_activation > -1 & time_domain_activation <= 1500) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> filter(time_domain_activation >= 8000) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+```
+
+Por lo tanto, podemos sacar información distintiva haciendo uso de esta variable.
+
+* time_domain_expiration
+
+```{r}
+# Anañlisis cuantitativo
+phishing_bruto |> count(time_domain_expiration) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(time_domain_expiration) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> summarise(min = min(time_domain_expiration),
+                            max = max(time_domain_expiration))
+```
+
+Vemos que volvemos a tener el valor -1, por lo que continuando con la lógica anterior, 
+también sería conveniente **desglosar este tipo de información** (nivel de variable 
+cualitativo dentro de una numérica). Por otro lado, tenemos un valor máximo superior al 
+de la variable anterior, lo que nos da a intuír que tendremos una distribución 
+considerablemente asimétrica.
+
+```{r}
+phishing_bruto |> summarise(mean = mean(time_domain_expiration),
+                            median = median(time_domain_expiration))
+```
+
+Donde, para apoyar nuestra visión inicial, tenemos unos valores de mediana y media 
+muy diferentes, lo que sugiere una pobre representatividad de esta última.
+
+```{r}
+# Visualización
+ggplot(phishing_bruto |> filter(time_domain_expiration >=365 & time_domain_expiration <= 5000), aes(x = time_domain_expiration)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por tiempo de la expriación del dominio", 
+       x = "Días", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  scale_x_continuous(breaks = seq(300, 3500, 750)) +
+  theme_minimal()
+```
+
+Parece que a partir del 3500 aproxiamdamente, apenas se distinguen observaciones, 
+y parece que los registros se componen mayoritariamente de webs legítimas como 
+sucedía con la variable de tiempo anterior.
+
+```{r}
+ggplot(phishing_bruto |> filter(time_domain_expiration > 3500), aes(x = time_domain_expiration)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por tiempo de la expriación del dominio > 3500 ", 
+       x = "Días", y = "Densidad", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+phishing_bruto |> filter(time_domain_expiration >= 3500) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+```
+
+Filtrando nuestra visualización y observando los datos calculados a partir de nuestra 
+objetivo vemos que estábamos en lo cierto. Encontramos un comportamiento similar 
+a la de la variable de tiempo anterior, dónde en estos casos, a medida que avanzamos 
+en los valores de la variable, las proporciones de webs legítimas son cada vez superiores.
+Estas dos variables nos valdrán para aportar información relevante a nuestros modelos.
+
+```{r}
+phishing_bruto |> dplyr::select(c(time_domain_activation, time_domain_expiration))
+```
+
+
+# Variables de directorio
+
+qty_dot_directory count (.) in directory
+qty_hyphen_directory count (-) in directory
+qty_underline_directory count (_) in directory
+qty_slash_directory count (/) in directory
+qty_questionmark_directory count (?) in directory
+qty_equal_directory count (=) in directory
+qty_at_directory count (@) in directory
+qty_and_directory count (&) in directory
+qty_exclamation_directory count (!) in directory
+qty_space_directory count ( ) in directory
+qty_tilde_directory count (~) in directory
+qty_comma_directory count (,) in directory
+qty_plus_directory count (+) in directory
+qty_asterisk_directory count (*) in directory
+qty_hashtag_directory count (#) in directory
+qty_dollar_directory count ($) in directory
+qty_percent_directory count (%) in directory
+directory_length directory length
+
+### Directory qty grupo 1
+
+
+Análisis cuantitativo:
+
+```{r}
+# qty_dot_directory
+phishing_bruto |> group_by(qty_dot_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_dot_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_hyphen_directory
+phishing_bruto |> group_by(qty_hyphen_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_hyphen_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_underline_directory
+phishing_bruto |> group_by(qty_underline_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_underline_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_slash_directory
+phishing_bruto |> group_by(qty_slash_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_slash_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_questionmark_directory
+phishing_bruto |> group_by(qty_questionmark_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_questionmark_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Como podemos ver, antes de empezar a observar la distribución de nuestra objetivo 
+en estas variables, volvemos a tener niveles negativos en variables representativas 
+de cantidades de caracteres. Una vez más, podemos interpretar dichos niveles de 
+forma que refleja que dicha característica no se aplica en los directorios o 
+no se puede determinar para esos directorios en cuestión. Y por otra parte, 
+cuando es 0, supondremos que la característica está presente pero en este caso 
+no se encuentra en la observación.
+
+Visualización:
+
+```{r}
+# qty_dot_directory
+ggplot(phishing_bruto, aes(x = qty_dot_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (.) en directorio", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_dot_directory > 0), aes(x = qty_dot_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (.) > 0 en directorio", 
+       x = "Nº de (.)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_hyphen_directory
+ggplot(phishing_bruto, aes(x = qty_hyphen_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (-) en directorio", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_hyphen_directory > 0), aes(x = qty_hyphen_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (-) > 0 en directorio", 
+       x = "Nº de (.)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_underline_directory
+ggplot(phishing_bruto, aes(x = qty_underline_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (_) en directorio", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_slash_directory
+ggplot(phishing_bruto, aes(x = qty_slash_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (/) en directorio", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_questionmark_directory
+ggplot(phishing_bruto, aes(x = qty_questionmark_directory)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (?) en directorio", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+grid.arrange(p, s, ncol = 2)
+```
+
+
+De forma general podemos ver en un principio, que el nivel más frecuente en este 
+grupo de variables es aquel que indica que dicha característica no se aplica en 
+dichas observaciones.
+
+Conclusiones:
+
+* `qty_dot_directory`: Vemos que la gran mayoría de los datos se concentran 
+en el nivel que indica que la característica no se aplica y donde la cantidad 
+de puntos es de 0. En el primero, la proporción de webs legítimas es casi del 9.50% 
+mientras que a medida que se aplica la caracterísitica y vamos aumentando en el 
+número de puntos, las proporciones de webs de phsihing van aumentando (partiendo 
+de un 63% en el 0) hasta que solo podemos distinguir webs de este tipo. Por lo tanto, 
+a parte de lo observado, tendremos que volver a **desglosar** la característica 
+de carácter cualitativo presente en la variable.
+* `qty_hyphen_directory`: Nos encontramos con un caso muy similar al de la anterior 
+variable, tanto en su distribución por niveles como en función de la variable 
+objetivo. Vemos en el gráfico donde filtramos los valores mayores que 0, que 
+la proporción de webs de phishing es muy superior, como sucedía en el caso 
+anterior. Por otro lado, volvemos a tener la característica cualitativa con el 
+nivel -1, donde una vez más se concentran más del 50% de los registros y las 
+proporciones con la objetivo reflejan una proporción muy alta de webs legítimas (98%).
+* `qty_underline_directory`: Observamos el mismo tipo de tendencia que en las 
+dos variables anteriores. **Volveremos a desglosar la información para esta variable**.
+* `qty_slash_directory`: Aplicaremos la misma lógica anterior, ya que volvemos a observar 
+una gran proporción de webs legítimas en el nivel -1, y una superioridad creciente 
+de aquellas que son de phishing cuando la característica sí se puede dar.
+* `qty_questionmark_directory`: Tenemos dos niveles con proporciones diferenciales 
+en nuestra objetivo y con un nivel de observaciones balanceado. Una vez más, observamos 
+casi un 9.50% de webs legítimas cuando no se aplica la cracterística de presentar 
+signos de interrogación, mientras que, cuando sí se aplica y la cantidad es de 0, 
+la proporción de webs de phishing es superior al 70%. Esta variable nos aporta información 
+muy diferencial acerca de nuestra objetivo, y por otro lado posee la información de manera
+condensada, por lo que nos será de gran utilidad en los modelos. Por otro lado, tendremos que volver 
+a dividir la información dado que vuelve a contener el nivel de naturaleza cualitativa.
+
+### Directory qty grupo 2
+
+Análisis cuantitativo:
+
+```{r}
+# qty_equal_directory
+phishing_bruto |> group_by(qty_equal_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_equal_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_at_directory
+phishing_bruto |> group_by(qty_at_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_at_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_and_directory
+phishing_bruto |> group_by(qty_and_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_and_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_exclamation_directory
+phishing_bruto |> group_by(qty_exclamation_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_exclamation_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Visualización:
+
+```{r}
+# qty_equal_directory
+ggplot(phishing_bruto, aes(x = qty_equal_directory)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (=) en directorio", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_equal_directory > 0), aes(x = qty_equal_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (=) > 0 en directorio", 
+       x = "Nº de (.)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_at_directory
+ggplot(phishing_bruto, aes(x = qty_at_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (@) en directorio", 
+       x = "Nº de (@)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_at_directory > 0), aes(x = qty_at_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (@) > 0 en directorio", 
+       x = "Nº de (@)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_and_directory
+ggplot(phishing_bruto, aes(x = qty_and_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (&) en directorio", 
+       x = "Nº de (&)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_and_directory > 0), aes(x = qty_and_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (&) > 0 en directorio", 
+       x = "Nº de (&)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_exclamation_directory
+ggplot(phishing_bruto, aes(x = qty_exclamation_directory)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (!) en directorio", 
+       x = "Nº de (!)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_exclamation_directory > 0), aes(x = qty_exclamation_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (!) > 0 en directorio", 
+       x = "Nº de (!)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+* `qty_equal_directory`: Vemos que cuando no se aplica la característica, una 
+vez más, la proporción de webs legítimas casi cubre el 9.50% de los registros en 
+función de la cantidad de "=" en el directorio. Por otro lado, cuando sí se 
+aplica y la cantidad es 0, las proporciones se asemejan más a las globales (27% 
+de phishing). Por último, en niveles superiores a 0, tenemos una cantidad muy 
+pequeña de datos donde la proporción de phishing es prácticamente del 9.50%.
+**Para el resto de variables**: Observamos las mismas tendencias en base a la objetivo y 
+su distribución que con la variable anterior. De este modo, desglosaremos la información 
+de las variables, y las tendremos en cuenta para nuestra selección, ya que presentan 
+tendencias que contienen información relevante acerca de nuestra variable objetivo.
+
+
+### Directory qty grupo 3
+
+Análisis cuantitativo:
+
+```{r}
+# qty_space_directory
+phishing_bruto |> group_by(qty_space_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_space_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_tilde_directory
+phishing_bruto |> group_by(qty_tilde_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_tilde_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_comma_directory
+phishing_bruto |> group_by(qty_comma_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_comma_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_plus_directory
+phishing_bruto |> group_by(qty_plus_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_plus_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+
+Visualización:
+
+```{r}
+# qty_space_directory
+ggplot(phishing_bruto, aes(x = qty_space_directory)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de ( ) en directorio", 
+       x = "cantidad de ( )", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_space_directory > 0), aes(x = qty_space_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de ( ) > 0 en directorio", 
+       x = "Nº de ( )", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_tilde_directory
+ggplot(phishing_bruto, aes(x = qty_tilde_directory)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (~) en directorio", 
+       x = "cantidad de (~)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_tilde_directory > 0), aes(x = qty_tilde_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (~) > 0 en directorio", 
+       x = "Nº de (~)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_comma_directory
+ggplot(phishing_bruto, aes(x = qty_comma_directory)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (,) en directorio", 
+       x = "cantidad de (,)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_comma_directory > 0), aes(x = qty_comma_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (,) > 0 en directorio", 
+       x = "Nº de (,)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_plus_directory
+ggplot(phishing_bruto, aes(x = qty_plus_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (+) en directorio", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_plus_directory > 0), aes(x = qty_plus_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (+) > 0 en directorio", 
+       x = "Nº de (+)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Conclusiones: 
+
+En términos generales tenemos un comportamiento similar al de los anteriores grupos 
+de variables de directorio. Es cierto que en agunos valores podemos encontrarnos 
+con un mayor porcentaje de webs de phishing, como podemos observar en el gráfico 
+de cantidad de (+) mayores que 0. Sin embargo, estamos hablando de valores donde 
+tenemos una cantidad de datos mínima. De forma genérica, cuando la característica se 
+aplica y la cantidad es de 0, existe un 72% de webs de phishing en los registros, y 
+cuando ya exsiten cantidades de caracteres, siguen siendo más frecuentes este 
+tipo de webs. Una vez más, desglosaremos la información cualitativa dentro de estas 
+variables y esperaremos a que estos patrones observables en nuestra variable objetivo 
+sean detectados por nuestros modelos.
+
+### Directory qty grupo 4
+
+
+Análisis cuantitativo:
+
+```{r}
+# qty_asterisk_directory
+phishing_bruto |> group_by(qty_asterisk_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_asterisk_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_hashtag_directory
+phishing_bruto |> group_by(qty_hashtag_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_hashtag_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_dollar_directory
+phishing_bruto |> group_by(qty_dollar_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_dollar_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_percent_directory
+phishing_bruto |> group_by(qty_percent_directory) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_percent_directory) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Visualización:
+
+```{r}
+# qty_asterisk_directory
+ggplot(phishing_bruto, aes(x = qty_asterisk_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (*) en directorio", 
+       x = "Nº de (*)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_asterisk_directory > 0), aes(x = qty_asterisk_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (*) > 0 en directorio", 
+       x = "Nº de (*)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_hashtag_directory
+ggplot(phishing_bruto, aes(x = qty_hashtag_directory)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (#) en directorio", 
+       x = "Nº de (#)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_dollar_directory
+ggplot(phishing_bruto, aes(x = qty_dollar_directory)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de ($) en directorio", 
+       x = "Nº de ($)", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_dollar_directory > 0), aes(x = qty_dollar_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de ($) > 0 en directorio", 
+       x = "Nº de ($)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_percent_directory
+ggplot(phishing_bruto, aes(x = qty_percent_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (%) en directorio", 
+       x = "cantidad de (%)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_percent_directory > 0), aes(x = qty_percent_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (%) > 0 en directorio", 
+       x = "Nº de (%)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Conclusiones:
+
+*`qty_asterisk_directory`: Mismas tendencias: Nivel -1 con casi el 9.50% de webs 
+legítimas, 72% de webs de phishing en el 0 y mayor porcentaje (9.50% en este caso) 
+de webs de phishing cuando el valor es 1 o superior.
+* `qty_hashtag_directory`: Tenemos dos valores diferenciales que puede tomar 
+esta variable en cuanto a los dos tipos de webs. Tal y como sucedía con la variable 
+cantidad de (?).
+* `qty_dollar_directory`: Comportamiento idéntico al de la primera variable de este
+grupo analizado
+* `qty_percent_directory`: Nuevamente, solo dos valores ya ocupan más del 99% de datos. 
+Su distribución por niveles y en base a la variable objetivo sigue las tendencias anteriores.
+
+Vemos que apenas hay diferencia de tendencias dentro de este grupo de variables. 
+Aplicaremos la transformación en base al nivel -1 y posteriormente hayaremos cuál de ellas 
+es seleccionada por cada modelo, ya que en su conjunto, existe mucha información que 
+se repite en base a su comportamiento.
+
+### Variable directory_length
+
+```{r}
+phishing_bruto |> count(directory_length, sort = TRUE) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(directory_length) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+```
+
+Podemos ver que de los 239 valores únicos que presenta la variable, únicamente 
+dos de ellos ya concentran más del 63% de los datos.
+
+```{r}
+ggplot(phishing_bruto, aes(x = directory_length)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por longitud de directorio", 
+       x = "Longitud de directorio", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Vemos que cuando la longitud del directorio no se aplica, el porcentaje de webs de 
+phishing apenas alcanza el 2% (una vez más). Sin embargo, cuando si se aplica 
+la característica y la longitud toma su valor mínimo (1), los porcentajes son muy 
+similares a los globales. Por último, y como sucede en la mayoría de nuestras variables 
+a partir de cierto valor (1 en este caso), la presencia de webs de phishing ocupa 
+la gran mayoría de los registros observables
+
+```{r}
+phishing_bruto |> filter(directory_length > 1) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+```
+
+Más del 82% en el caso de esta variable
+
+
+# Variables de file
+
+qty_dot_file count (.) in file
+qty_hyphen_file count (-) in file
+qty_underline_file count (_) in file
+qty_slash_file count (/) in file
+qty_questionmark_file count (?) in file
+qty_equal_file count (=) in file
+qty_at_file count (@) in file
+qty_and_file count (&) in file
+qty_exclamation_file count (!) in file
+qty_space_file count ( ) in file
+qty_percent_file count (%) in file
+file_length file length
+qty_tilde_file count (~) in file
+qty_comma_file count (,) in file
+qty_plus_file count (+) in file
+qty_asterisk_file count (*) in file
+qty_hashtag_file count (#) in file
+qty_dollar_file count ($) in file
+
+
+### File qty grupo 1
+
+Análisis cualitativo:
+
+```{r}
+# qty_at_file
+phishing_bruto |> group_by(qty_at_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_at_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_and_file
+phishing_bruto |> group_by(qty_and_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_and_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_exclamation_file
+phishing_bruto |> group_by(qty_exclamation_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_exclamation_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_space_file
+phishing_bruto |> group_by(qty_space_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_space_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_tilde_file
+phishing_bruto |> group_by(qty_tilde_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_tilde_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_comma_file
+phishing_bruto |> group_by(qty_comma_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_comma_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Visualización:
+
+```{r}
+# qty_at_file
+ggplot(phishing_bruto, aes(x = qty_at_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (@) en archivo", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_and_file
+ggplot(phishing_bruto, aes(x = qty_and_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (&) en archivo", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_exclamation_file
+ggplot(phishing_bruto, aes(x = qty_exclamation_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (!) en archivo", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_space_file
+ggplot(phishing_bruto, aes(x = qty_space_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de ( ) en archivo", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_tilde_file
+ggplot(phishing_bruto, aes(x = qty_tilde_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (~) en archivo", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_comma_file
+ggplot(phishing_bruto, aes(x = qty_comma_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (,) en archivo", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Conclusiones:
+
+De forma genérica, observamos una vez más que solo 2 valores ya comprenden casi la totalilad de 
+observaciones para este grupo de variables. Por otro lado, volvemos a tener el -1 presente en todas 
+las variables, **tendremos que desglosar su información**. Referente a las distribuciones con la objetivo, 
+tenemos una vez más un mínimo porcentaje de webs de phishing cuando la característica no se aplica, y 
+cuando la cantidad de puntos es 0, el phishin vuelve ser superior al 70%. Si nos fijamos en aquellos 
+niveles que no representan ni el 1% de los datos de forma conjunta, observamos una vez más, una 
+mayor presencia de webs de phishing que de legítimas.
+
+### File qty grupo 2
+
+Análisis cuantitativo:
+
+```{r}
+# qty_dot_file
+phishing_bruto |> group_by(qty_dot_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_dot_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_hyphen_file
+phishing_bruto |> group_by(qty_hyphen_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_hyphen_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_underline_file
+phishing_bruto |> group_by(qty_underline_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_underline_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_slash_file
+phishing_bruto |> group_by(qty_slash_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_slash_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_questionmark_file
+phishing_bruto |> group_by(qty_questionmark_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_questionmark_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_equal_file
+phishing_bruto |> group_by(qty_equal_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_equal_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Visualización:
+
+```{r}
+# qty_dot_file
+ggplot(phishing_bruto, aes(x = qty_dot_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (.) en archivo", 
+       x = "Nº de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_hyphen_file
+ggplot(phishing_bruto, aes(x = qty_hyphen_file)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (-) en archivo", 
+       x = "Nº de (-)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_underline_file
+ggplot(phishing_bruto, aes(x = qty_exclamation_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (_) en archivo", 
+       x = "Nº de (_)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_slash_file
+ggplot(phishing_bruto, aes(x = qty_slash_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (/) en archivo", 
+       x = "Nº de (/)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_questionmark_file
+ggplot(phishing_bruto, aes(x = qty_questionmark_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (?) en archivo", 
+       x = "Nº de ?.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_equal_file
+ggplot(phishing_bruto, aes(x = qty_equal_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (=) en archivo", 
+       x = "Nº de (=)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Las tendencias en cuanto a distribución y comportamiento de la variable objetivo no presentan ninguna 
+diferencia notable a lo ya visto anteriormente. Lo que sí podemos destacar es la poca cantidad de valores 
+únicos que podemos encontrar en las variables de cantidad de ? y /. Por el resto, volvemos a tener el 
+aspecto cualitativo que sería conveniente extraer en forma de otra variable cualitativa binaria.
+
+### File qty grupo 3
+
+Análisis cuantitativo:
+
+```{r}
+# qty_plus_file
+phishing_bruto |> group_by(qty_plus_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_dot_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_asterisk_file
+phishing_bruto |> group_by(qty_asterisk_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_dot_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_hashtag_file
+phishing_bruto |> group_by(qty_hashtag_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_dot_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_dollar_file
+phishing_bruto |> group_by(qty_dollar_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_dot_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+
+# qty_percent_file
+
+phishing_bruto |> group_by(qty_percent_file) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+phishing_bruto |> count(qty_percent_file) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+```
+
+Visualización:
+
+```{r}
+# qty_plus_file
+ggplot(phishing_bruto, aes(x = qty_plus_file)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (+) en archivo", 
+       x = "Nº de (%)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_asterisk_file
+ggplot(phishing_bruto, aes(x = qty_asterisk_file)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (*) en archivo", 
+       x = "Nº de (*)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_asterisk_file > 0), aes(x = qty_asterisk_file)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (*) > 0 en achivo", 
+       x = "Nº de (*)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_hashtag_file
+ggplot(phishing_bruto, aes(x = qty_hashtag_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (#) en archivo", 
+       x = "Nº de (#)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_dollar_file
+ggplot(phishing_bruto, aes(x = qty_dollar_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de ($) en archivo", 
+       x = "Nº de ($)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -0.2, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_percent_file
+ggplot(phishing_bruto, aes(x = qty_percent_file)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (%) en archivo", 
+       x = "Nº de (%)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+## Filtramos la variable para una mejor visualización
+ggplot(phishing_bruto |> filter(qty_percent_file > 0), aes(x = qty_percent_file)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (%) > 0 en archivo", 
+       x = "Nº de (-)", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Conclusiones:
+
+Comportamiento idéntico al de grupo de variables anterior. En el caso de cantidad de # y $ volvemos 
+a tener 2 valores únicos, y respecto a los valores que pueden tomar las variables, volvemos a tener 
+presente el nivel que indica que la característica no se aplica.
+
+
+### Variable file length
+
+Para finalizar la exploración de las variables de tipo archivo tenemos la longitud 
+del nombre del archivo.
+
+```{r}
+phishing_bruto |> summarise(mean = mean(file_length),
+                            median = median(file_length),
+                            min = min(file_length),
+                            max = max(file_length))
+```
+
+Observando los estadísticos descriptivos ya podemos ver que se trata de una 
+variable con valores atípicos muy elevados.
+
+```{r}
+phishing_bruto |> count(file_length) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(file_length) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+```
+
+Vemos que de los 168 valores únicos que hay, únicamente 2 de ellos ya conforman 
+más del 75% del total de registros.
+
+```{r}
+ggplot(phishing_bruto, aes(x = file_length)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por longitud de archivo", 
+       x = "Longitud de archivo", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Como podíamos intuír tras observar los datos, apenas podemos distinguir registros 
+superiores a 0.
+
+```{r}
+phishing_bruto |> filter(file_length > 0) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+```
+
+```{r}
+ggplot(phishing_bruto |> filter(file_length > 0), aes(x = file_length)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por longitud de archivo > 0", 
+       x = "Unidades", y = "Recuento", fill = "Phishing") +
+  scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+
+# AQUIVariables de parámetros eliminar qty_params
+
+qty_dot_params count (.) in parameters
+qty_hyphen_params count (-) in parameters
+qty_underline_params count (_) in parameters
+qty_slash_params count (/) in parameters
+qty_questionmark_params count (?) in parameters
+qty_equal_params count (=) in parameters
+qty_at_params count (@) in parameters
+qty_and_params count (&) in parameters
+qty_exclamation_params count (!) in parameters
+qty_space_params count ( ) in parameters
+qty_tilde_params count (~) in parameters
+qty_comma_params count (,) in parameters
+qty_plus_params count (+) in parameters
+qty_asterisk_params count (*) in parameters
+qty_hashtag_params count (#) in parameters
+qty_dollar_params count ($) in parameters
+qty_percent_params count (%) in parameters
+params_length parameters length
+tld_present_params TLD presence in arguments
+qty_params number of parameters
+
+Comprobamos el número de valores únicos en estas variables:
+
+```{r}
+phishing_bruto |> select(contains("params")) |> 
+  summarise_all(list(~n_distinct(.)))
+```
+
+
+
+No convertimos una vez más las variables de qty_percent y legth.
+
+### Params qty grupo 1
+
+Análisis cualitativo:
+
+```{r}
+# qty_at_params
+phishing_bruto |> group_by(qty_at_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_and_params
+phishing_bruto |> group_by(qty_and_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_exclamation_params
+phishing_bruto |> group_by(qty_exclamation_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_space_params
+phishing_bruto |> group_by(qty_space_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_tilde_params
+phishing_bruto |> group_by(qty_tilde_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_comma_params
+phishing_bruto |> group_by(qty_comma_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+```
+
+Visualización:
+
+```{r}
+# qty_at_params
+ggplot(phishing_bruto, aes(x = qty_at_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (@) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_and_params
+ggplot(phishing_bruto, aes(x = qty_and_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (&) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_exclamation_params
+ggplot(phishing_bruto, aes(x = qty_exclamation_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (!) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_space_params
+ggplot(phishing_bruto, aes(x = qty_space_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de ( ) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_tilde_params
+ggplot(phishing_bruto, aes(x = qty_tilde_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (~) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_comma_params
+ggplot(phishing_bruto, aes(x = qty_comma_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (,) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Vemos que en todas las variables tenemos la mayoría de datos concentrados en el 
+nivel -1, donde la probabilidad de que la web sea de phishing es del 29% 
+aproximadamente. Por otro lado, los demás niveles tienen muchos menos registros 
+y en todos la probabilidad de phishing es cercana o superior al 90%. Por lo tanto, 
+podríamos aplicar la misma transformación para cada una de ellas:
+
+Conclusiones:
+
+* `qty_at_params`: **-1**, **>=0**.
+* `qty_and_params`: **-1**, **>=0**.
+* `qty_exclamation_params`: **-1**, **>=0**.
+* `qty_space_params`: **-1**, **>=0**.
+* `qty_tilde_params`: **-1**, **>=0**. 
+* `qty_comma_params`: **-1**, **>=0**.
+
+### Params qty grupo 2
+
+Análisis cuantitativo:
+
+```{r}
+# qty_dot_params
+phishing_bruto |> group_by(qty_dot_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_hyphen_params
+phishing_bruto |> count(qty_hyphen_params) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(qty_hyphen_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_underline_params
+phishing_bruto |> group_by(qty_underline_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_slash_params
+phishing_bruto |> group_by(qty_slash_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_questionmark_params
+phishing_bruto |> group_by(qty_questionmark_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_equal_params
+phishing_bruto |> group_by(qty_equal_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+```
+
+Visualización:
+
+```{r}
+# qty_dot_params
+ggplot(phishing_bruto, aes(x = qty_dot_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (.) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_hyphen_params
+ggplot(phishing_bruto, aes(x = qty_hyphen_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (-) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_underline_params
+ggplot(phishing_bruto, aes(x = qty_exclamation_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (_) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_slash_params
+ggplot(phishing_bruto, aes(x = qty_slash_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (/) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_questionmark_params
+ggplot(phishing_bruto, aes(x = qty_questionmark_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (?) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_equal_params
+ggplot(phishing_bruto, aes(x = qty_equal_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (=) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Observando tanto el número de registros por nivel como sus proporciones en función 
+de la objetivo, sucede lo mismo que en el grupo anterior de variables tipo cantidad 
+en parámetros. Podríamos volver a convertirlas en factor con las siguientes normas 
+de agrupamiento:
+
+Conclusiones:
+
+* `qty_dot_file`: **-1**, **>=0**.
+* `qty_hyphen_file`: **-1**, **>=0**.
+* `qty_underline_file`: **-1**, **>=0**.
+* `qty_slash_file`: **-1**, **>=0**.
+* `qty_questionmark_file`: **-1**, **>=0**.
+* `qty_equal_file`: **-1**, **>0**.
+
+### Params qty grupo 3
+
+Análisis cuantitativo:
+
+```{r}
+# qty_plus_params
+phishing_bruto |> group_by(qty_plus_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_asterisk_params
+phishing_bruto |> group_by(qty_asterisk_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_hashtag_params
+phishing_bruto |> group_by(qty_hashtag_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_dollar_params
+phishing_bruto |> group_by(qty_dollar_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_percent_params
+phishing_bruto |> count(qty_percent_params) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(qty_percent_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+
+# qty_params
+phishing_bruto |> group_by(qty_params) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+```
+
+
+Visualización:
+
+```{r}
+# qty_plus_params
+ggplot(phishing_bruto, aes(x = qty_plus_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (+) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_asterisk_params
+ggplot(phishing_bruto, aes(x = qty_asterisk_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (*) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_hashtag_params
+ggplot(phishing_bruto, aes(x = qty_hashtag_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (#) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_dollar_params
+ggplot(phishing_bruto, aes(x = qty_dollar_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de ($) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -0.2, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_percent_params
+ggplot(phishing_bruto, aes(x = qty_percent_params)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (%) en parámetros", 
+       x = "cantidad de (.)", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+# qty_params
+ggplot(phishing_bruto, aes(x = qty_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de parámetros", 
+       x = "cantidad de parámetros", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = after_stat(count)), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Conclusiones:
+
+* `qty_plus_params`: Vemos que hay más frecuencia de webs legítimas en los niveles 
+con muy pocos registros. Lo mejor en este caso sería realizar el agrupamiento de estos 
+con el nivel -1, ya que presenta mayor proporción de este tipo de webs y cuenta 
+con un mayor número de registros (lo que no alteraría en gran medida sus 
+proporciones con la objetivo): **-1**, **0** -> **agrupamiento en -1**.
+* `qty_asterisk_params`: Volvemos a realizar el agrupamiento junto con el segundo 
+nivel más frecuente, donde el phishing es mucho más probable: **-1**, **>=0**.
+* `qty_hashtag_params`: La dejamos como está.
+* `qty_dollar_params`: Una vez más vemos en los niveles con pocos registros que 
+están solo las webs de phishing presentes: **-1**, **>=0**.
+* `qty_percent_params`: el 99% de los registros se encuentran en el -1 y el 0, 
+donde el primero contiene el 90% de los datos.
+
+```{r}
+phishing_bruto |> filter(qty_percent_params > 0) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+```
+
+Vemos que casi el 80% de las webs cuando la cantidad de % en los parámetros es 
+mayor que 0, son de phishing. También, antes habíamos podido ver que cuando la 
+característica no se aplica, volvemos a tener un 29% de este tipo de webs, y cuando 
+la cantidad sí se aplica pero es 0, el phishing asciende al 91%. Por lo tanto, 
+podríamos convertir esta variable en un factor con dos niveles: cuando no se aplica 
+la característica y cuando sí lo hace: **-1**, **>=0**.
+
+* `qty_params`: Una vez más, cuando la característica se aplica, la probabilidad de 
+phishing está cercana o es superior al 90%. Mientras que, cuando no se aplica esta es 
+inferior a las globales (29%). Podríamos volver a convertir a factor y agrupar niveles: 
+**-1**, **>=0**.
+
+### Variable params lenght
+
+Variable que indica la longitud de caracteres en el parámetro.
+
+```{r}
+phishing_bruto |> count(params_length) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(n))
+phishing_bruto |> group_by(params_length) |> count(phishing) |> 
+  mutate(porc = 9.50*n/sum(n))
+```
+
+Vemos que solamente un valor que puede tomar la variable (-1) de los 354 posibles, 
+ya presenta más del 90% de los registros donde volvemos a ver una proporción de 
+webs de phishing del 29%.
+
+```{r}
+phishing_bruto |> filter(params_length >= 0) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+```
+
+Por otro lado vemos que para el resto de valores, cuando la característica se aplica, 
+teniendo o no cantidad de caracteres, la probabilidad de que la web sea de phishing 
+es superior al 90%.
+
+```{r}
+phishing_bruto |> summarise(min = min(params_length),
+                            max = max(params_length))
+```
+
+Como era de esperar, tenemos un valor máximo muy elevado.
+
+```{r}
+ggplot(phishing_bruto |> filter(params_length > 0), aes(x = params_length)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por longitud del parámetro", 
+       x = "Longitud de la URL", y = "Recuento", fill = "Phishing") +
+    scale_y_continuous(breaks = seq(0, 8000000, 15000)) +
+  scale_x_continuous(breaks = seq(0, 4000, 500)) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Viendo el gráfico, carece de sentido tener unos valores tan altos en la variable, 
+la distribución es muy asimétrica. Teniendo en cuenta la información anterior, 
+podríamos simplificar en gran medida esta variable convirtiéndola a factor y 
+creando dos únicos niveles: **-1**, **>=1**.
+
+### Variable tld_presents_params
+
+Variable que indica si el enlace presenta los caracteres tld en los parámetros.
+
+```{r}
+phishing_bruto |> count(tld_present_params) |> 
+  mutate(porc = 100*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(tld_present_params) |> 
+  count(phishing) |> mutate(porc = 100*n / sum(n))
+```
+
+```{r}
+ggplot(phishing_bruto2, aes(x = tld_present_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de (%) en parámetros", 
+  x = "TLD presente en los parámetros", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = -0.5, hjust = 0.5) +
+  theme_minimal()
+```
+
+Vemos que uno de los 3 niveles (-1) ya contiene más del 90% de los datos totales. 
+Si nos fijamos en su distribución con la objetivo, los otros dos niveles presentan 
+una proporción de webs de pshishing del 87% y 99% respectivamente. Por otro lado, 
+volvemos a tener un 29% de phishing en el nivel más frecuente. Teniendo en cuenta 
+el número de observaciones por nivel y la distribución de los tipos de web, podríamos 
+simplificar esta variable conviritiendola a factor y diferenciando 2 niveles: 
+**-1**, **>=0**.
+
+# Variables de otras categorías
+
+Por último, analizaremos las variables restantes, las cuales no pertenecen a ninguno 
+de los grandes grupos de variables de nuestros datos en función del entorno a que 
+pertenecen.
+
+## Variable time_response
+
+Variable representativa del tiempo (en segundos) de respuesta de la web en cuestión.
+
+```{r}
+phishing_bruto |> skim(time_response)
+```
+
+Como vemos a partir de la información que nos aporta la función skim, tenemos 
+un mínimo de respuesta de -1, donde realmente nos indica que dicho tiempo de respuesta 
+no se aplica a determinadas webs. Como hemos propuesto con anteriores variables, 
+lo mejor sería **desglosar** esta información creando una nueva variable de tipo 
+factor, para así considerar los dos escenarios (cuando no se aplica / cuando se 
+aplica y cuánto es el tiempo). Por el otro lado, tenemos un máximo de tiempo de 
+repsuesta de unos 38 segundos. 
+Fijándonos en que la media apenas a un segundo, podemos intuír que una vez más, 
+tenemos una distribución con valores muy elevados y que apenas presentan registros.
+
+```{r}
+ggplot(phishing_bruto2, aes(x = time_response)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por tiempo de respuesta", 
+       x = "Segundos", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Parece que, como sucedía en la mayoría de nuestras variables, a partir de un valor 
+de 5 en este caso, la proporción de phishing parece aumentar en función de esta 
+variable.
+
+```{r}
+phishing_bruto |> filter(time_response <= 5) |> 
+  count(phishing) |> mutate(porc = 100*n/sum(n))
+phishing_bruto |> filter(time_response > 9) |> 
+  count(phishing) |> mutate(porc = 100*n/sum(n))
+ggplot(phishing_bruto2 |> filter(time_response > 5), aes(x = time_response)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por tiempo de respuesta > 5", 
+       x = "Segundos", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+
+```
+
+Vemos que en este caso no lo hace de una forma tan brusca como sucedía en casos 
+anteriores. No obstante, seguimos observando comportamientos que pueden ser 
+determinantes.
+
+## Variable asn_ip
+
+Esta variable refleja la cantidad de sistemas autónomos que contiene la web 
+en cuestión. Los sitemas autónomos son grupos de redes IP que ejecutan una o más 
+webs con una política de ruta específica. Cada AS se identifica con un número 
+único
+
+```{r}
+phishing_bruto |> skim(asn_ip)
+```
+
+Volvemos a tener una variable cuyo mínimo presenta el -1 y el cual procederemos a 
+**desglosar** en el preprocesamiento posterior de nuestros datos. Fijándonos en los 
+estadísticos descriptivos, esta 
+
+```{r}
+ggplot(phishing_bruto2, aes(x = asn_ip)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por números de AS", 
+       x = "Números de AS", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  geom_vline(xintercept = 34000, color = "blue", size = 1, linetype = "dashed") +
+  theme_minimal()
+```
+
+Parece que a partir de un valor de 32000 aproximadamente, hay en cambio drástico 
+en cuanto a las proporciones de los dos tipos de webs.
+
+```{r}
+ggplot(phishing_bruto2 |> filter(asn_ip > 32000), aes(x = asn_ip)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por números de AS > 32000", 
+       x = "Números de AS", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Parece que a partir de un valor aproximado a 32000, el porcentaje de phishing es 
+ligeramente superior. Lo vemos con datos:
+
+```{r}
+phishing_bruto |> filter(asn_ip <= 32000) |> count(phishing) |> 
+  mutate(porc = 100*n/sum(n))
+phishing_bruto |> filter(asn_ip > 34000) |> count(phishing) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+Como sucedía también con la variable anterior, notamos que a medida que tenemos 
+una mayor cantidad en la variable, el porcentaje de webs de phishing es ligeramente 
+superior.
+
+## Variable qty_ip_resolved
+
+Esta variable nos indica el número de IP's resueltas.
+
+```{r}
+phishing_bruto |> count(qty_ip_resolved) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(qty_ip_resolved) |> count(phishing) |>  
+  mutate(porc = 9.50*n/sum(n))
+```
+
+Podemos ver que esta variable de tipo númerica no toma tantos valores únicos. 
+Más del 80% del total de datos se concentran en el 1, donde también nos econtramos 
+con unas proporciones de webs de phishing ligeramente superiores a las globales. 
+Si nos fijamos en el mínimo, volvemos a ver el valor -1, por lo que una vez más 
+sería ideal **desglosar la información de forma separada**. 
+
+```{r}
+ggplot(phishing_bruto2, aes(x = qty_ip_resolved)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de IP's resueltas", 
+       x = "Cantidad de IP's", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+En términos generales, observando tanto los datos anteriores como el histograma, 
+parece que esta variable presenta una mayor proporción de webs legítimas a medida 
+que aumentamos en sus valores.
+
+
+```{r}
+ggplot(phishing_bruto2 |> filter(qty_ip_resolved > 2), aes(x = qty_ip_resolved)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de IP's resueltas > 2", 
+       x = "Unidades", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+```{r}
+phishing_bruto |> filter(qty_ip_resolved > 2) |> count(qty_ip_resolved) |> 
+  mutate(porc = 100*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> filter(qty_ip_resolved > 2) |> count(phishing) |>  
+  mutate(porc = 100*n/sum(n))
+```
+
+
+Parece que en este caso la información determinante se encuentra en el valor que 
+recoge a la mayoría de registros (1), donde a diferencia de como sucedía en el resto de 
+variables, este presenta un 37% de webs de phishing, lo cual supone un 3% más de 
+lo considerado como proporciones normales en nuestros datos.
+
+## Variable qty_nameservers
+
+Variable que indica el número de nombres de servidores resueltos.
+
+```{r}
+phishing_bruto |> count(qty_nameservers) |> 
+  mutate(porc = 9.50*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(qty_nameservers) |> count(phishing) |>  
+  mutate(porc = 9.50*n/sum(n))
+```
+
+En este caso, la mayoría de los datos se concentran en el valor 2, donde tenemos 
+unas proporciones de webs phishing ligeramente superiores a las globales e inferiores 
+a como sucedía en la anterior variable.
+
+```{r}
+ggplot(phishing_bruto2, aes(x = qty_nameservers)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de nombres de servidores resueltos", 
+       x = "Unidades", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Como hemos podido ver en las proporciones, encontramos más de un 70% de webs de 
+phishing cuando la web presenta 1 nombre de servidor resuelto. 
+
+```{r}
+phishing_bruto |> filter(qty_nameservers < 2) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+ggplot(phishing_bruto2 |> filter(qty_nameservers > 5), aes(x = qty_nameservers)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de nombres de servidores resueltos > 5", 
+       x = "Unidades", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+```{r}
+phishing_bruto |> filter(qty_nameservers > 5) |> count(phishing) |>  
+  mutate(porc = 100*n/sum(n))
+```
+
+
+A diferencia con las tendencias anteriores, la presencia de webs legítimas aumenta a medida que 
+avanzamos en los valores de esta variable
+
+## Variable qty_mx_servers
+
+Indica el número de servidores mx. Es decir, aquellos registros que especifican 
+como debe ser encaminado un correo electrónico en internet.
+
+```{r}
+phishing_bruto |> count(qty_mx_servers) |> 
+  mutate(porc = 100*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(qty_mx_servers) |> count(phishing) |>  
+  mutate(porc = 100*n/sum(n))
+```
+
+Casi el 50% de los registros se concentran en un número de servidores mx igual a 1. 
+En dicho nivel, vemos que la proporción de webs de phishing asciende a un 40% aproximadamente.
+
+```{r}
+ggplot(phishing_bruto2, aes(x = qty_mx_servers)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de servidores mx", 
+       x = "Unidades", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Una vez más, parece que la información diferenciadora se encontraba en dicho nivel, 
+ya que podemos ver de forma visual que a medida que encontramos más servidores mx 
+presentes en las páginas webs, las proporciones de aquellas que son legítimas es cada 
+vez superior.
+
+```{r}
+ggplot(phishing_bruto |> filter(qty_mx_servers > 1), aes(x = qty_mx_servers)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de servidores mx > 1", 
+       x = "Unidades", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+
+## Variable ttl_hostname
+
+Valor del tiempo del vida asociado con el nombre del host (anfitrión).
+
+```{r}
+phishing_bruto |> skim(ttl_hostname)
+```
+
+Por los estadísticos descriptivos y la pequeña representación del histograma 
+podemos ver que se trata de una variable con una cola pesada a la derecha, 
+donde tenemos un valor máximo de valor de tiempo de vida de unos 9.5800 aproximadamente 
+y un mínimo de -1, donde una vez más nos indica que no se aplicaría o se desconoce información 
+acerca de esta característica (**desglosaremos la información una vez más**).
+
+
+```{r}
+ggplot(phishing_bruto2, aes(x = ttl_hostname)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por ttl del nombre del host", 
+       x = "Ttl hostname", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  geom_vline(xintercept = 30000, color = "blue", size = 1.5) +
+  theme_minimal()
+```
+
+Parece que a partir de un valor de 30000 tenemos una mayor proporción de webs 
+legítimas.
+
+```{r}
+phishing_bruto |> filter(ttl_hostname > 30000) |> 
+  count(phishing) |> mutate(porc = 100*n/sum(n))
+ggplot(phishing_bruto2 |> filter(ttl_hostname > 30000), aes(x = ttl_hostname)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por ttl del nombre del host > 30000", 
+       x = "Ttl hostname", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+Este comportamiento sería información relevante para ser captada por nuestros modelos.
+
+```{r}
+phishing_bruto |> filter(ttl_hostname <= 30000) |> 
+  count(phishing) |> mutate(porc = 9.50*n/sum(n))
+```
+
+Ya que como podemos ver en las proporciones de webs cuando el valor del tiempo de 
+vida es igual o menor a 30000, las proporciones de webs son muy similares a las 
+vistas en el análisis exploratorio inicial.
+
+
+
+Esta variable indica si la web en cuestión tiene el certificado de seguridad de 
+la capa de transporte. Dicho certificado es la base de la seguridad en internet, 
+y su función principal, entre otras, es proteger el cifrado de datos que intercambian 
+el navegador, el servidor y el sitio web.
+
+```{r}
+phishing_bruto |> count(tls_ssl_certificate) |> 
+  mutate(porc = 100*n/sum(n), cumul = cumsum(porc))
+```
+
+Como ya se podía intuír por la definición de la variable, volvemos a tener otra 
+de tipo cualitativo que está codificada como numérica. En este caso, el 0 nos indica 
+que dicha web no presenta ese certificado, y el 1 que sí lo presenta. Si nos 
+fijamos en la distribución de sus niveles, vemos que están muy balanceados, 
+con prácticamente un 50% de los datos en cada uno.
+
+```{r}
+phishing_bruto |> group_by(tls_ssl_certificate) |> count(phishing) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+Sin embargo, la proporción de webs de phishing cuando toma el valor 0, no son
+tan altas como las esperadas, si no que únicamente encontramos un 2% más que en 
+las proporciones globales de los datos. Por el otro lado, cuando sí tienen dicho 
+certificado, el porcentaje también varía en un 2%, en este caso, a favor de las 
+páginas web legítimas.
+
+```{r}
+ggplot(phishing_bruto2, aes(x = tls_ssl_certificate)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por certificado tls/ssl", 
+       x = "Certificado", y = "Recuento", fill = "Phishing") +
+      geom_text(aes(label = ..count..), stat = "count", vjust = -1, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+## Variable qty_redirects
+
+Por último, pasamos a analizar la variable que nos indica el número de redirecciones 
+que presenta la web.
+
+```{r}
+phishing_bruto |> count(qty_redirects) |> 
+  mutate(porc = 100*n/sum(n), cumul = cumsum(porc))
+phishing_bruto |> group_by(qty_redirects) |> count(phishing) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+Podemos observar que el mínimo de esta variable es el -1, donde nos indica que 
+dicha observación no pueda presentar redirecciones o que se desconoce esa información. 
+Por otro lado, en un valor que toma la variable se concentra más del 50% de los registros 
+(0), donde también la proporción de webs de phishing es superior al 40%. Observando 
+como evolucionan las proporciones, parece que a medida que nos encontramos más cantidad 
+de redirecciones, las proporciones de phishing van disminuyendo.
+
+```{r}
+ggplot(phishing_bruto2, aes(x = qty_redirects)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de redirecciones", 
+       x = "Nº de redirecciones", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal()
+```
+
+En el histograma también podemos ver que a partir de un número de 5 redirecciones 
+apenas distinguimos registros, como también sucedía en la mayoría de nuestras variables.
+En base a nuestra variable objetivo, parece que es en el 0 donde mas proporción de 
+webs de phishing podemos observar, en los distintos valores se observa una proporción 
+de webs legítimas superior a lo observado en el conjunto de los datos.
+
+```{r}
+phishing_bruto |> filter(qty_redirects != 0) |> count(phishing) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+Como vemos, cuando el número de redirecciones web es distinto de 0, la proporción 
+de webs de phishing es del 25%, comparado al 40% de cuando sí toma dicho valor.
+
+Por lo tanto, tendremos en cuenta esta variable para la selección previa a nuestros 
+modelos, ya que presenta información relevante acerca de nuestro objetivo .  Por 
+otro lado, también tendremos que **desglosar** su información, ya que presenta 
+el rasgo cualitativo en el valor -1 como sucedía también en determinadas variables.
+
+### Grafico conjunto
+
+```{r}
+a <- ggplot(phishing_bruto2 |> filter(time_response > 5 & time_response < 18), aes(x = time_response)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por tiempo de respuesta > 5", 
+       fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+    scale_y_continuous(name = NULL) +
+  scale_x_continuous(name = NULL) +
+  theme_minimal() +
+    theme(plot.title = element_text(size = 8))
+
+b <- ggplot(phishing_bruto2 |> filter(asn_ip < 50000), aes(x = asn_ip)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por números de AS < 50000", 
+       fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00"), guide = FALSE) +
+    scale_y_continuous(name = NULL) +
+  scale_x_continuous(name = NULL) +
+  geom_vline(xintercept = 33500, color = "blue", size = 0.65, linetype = "dashed") +
+  theme_minimal() +
+    theme(plot.title = element_text(size = 8))
+
+c <- ggplot(phishing_bruto2 |> filter(qty_ip_resolved > 2 & qty_ip_resolved < 10), aes(x = qty_ip_resolved)) + 
+    scale_y_continuous(name = NULL) +
+  scale_x_continuous(name = NULL) +
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de IP's resueltas > 2", 
+       fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00"), guide = FALSE) +
+  theme_minimal() +
+    theme(plot.title = element_text(size = 8))
+
+d <- ggplot(phishing_bruto2 |> filter(qty_nameservers > 5 & qty_nameservers <= 16), aes(x = qty_nameservers)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de nombres de servidores resueltos > 5", 
+       fill = "Phishing") +
+    scale_y_continuous(name = NULL) +
+  scale_x_continuous(name = NULL) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00"), guide = FALSE) +
+  theme_minimal() +
+    theme(plot.title = element_text(size = 7))
+
+
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+Segundo
+
+```{r}
+a <- ggplot(phishing_bruto2, aes(x = qty_mx_servers)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de servidores mx", 
+       x = "Unidades", y = "Recuento", fill = "Phishing") +
+      scale_y_continuous(name = NULL) +
+  scale_x_continuous(name = NULL) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+  theme_minimal() +
+      theme(plot.title = element_text(size = 10))
+
+
+b <- ggplot(phishing_bruto2 |> filter(ttl_hostname > 30000), aes(x = ttl_hostname)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+      scale_y_continuous(name = NULL) +
+  scale_x_continuous(name = NULL) +
+  labs(title = "Webs de Phishing por ttl del nombre del host > 30000", 
+       x = "Ttl hostname", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00"), guide = FALSE) +
+  theme_minimal() +
+      theme(plot.title = element_text(size = 10))
+
+
+c <- ggplot(phishing_bruto2, aes(x = tls_ssl_certificate)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por certificado tls/ssl", 
+       x = "Certificado", y = "Recuento", fill = "Phishing") +
+      scale_y_continuous(name = NULL) +
+  scale_x_continuous(name = NULL) +
+      geom_text(aes(label = ..count..), stat = "count", vjust = -0.5, hjust = 0.5) +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00"), guide = FALSE) +
+  theme_minimal() +
+      theme(plot.title = element_text(size = 10))
+
+d <- ggplot(phishing_bruto2 |> filter(qty_redirects < 8), aes(x = qty_redirects)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+      scale_y_continuous(name = NULL) +
+  scale_x_continuous(name = NULL) +
+  labs(title = "Webs de Phishing por número de redirecciones", 
+       x = "Nº de redirecciones", y = "Recuento", fill = "Phishing") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00"), guide = FALSE) +
+  theme_minimal() +
+      theme(plot.title = element_text(size = 10))
+
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+
+# Resumen de las variables
+
+AQUI PONER UN RESUMEN DE CUAL ELIMINAREMOS, RECODIFICAREMOS, CREAREMOS
+
+* `domain_in_ip`: Covertimos en factor
+* `server_client_domain`: La eliminamos
+* `tld_present_params`: Covertimos en factor
+* `email_in_url`: Covertimos en factor
+* `domain_spf`: Covertimos en factor
+* `tls_ssl_certificate`: Covertimos en factor
+* `url_google_index`: Covertimos en factor y precindimos del nivel -1
+* `domain_google_index`: Covertimos en factor
+* `url_shortened`: Covertimos en factor
+* `phishing`: Covertimos en factor
+
+
+## Nuevas variables de carácter general
+
+explicar la lógica
+
+* **qty_dots**
+* **qty_hyphens**
+* **qty_underlines**
+* **qty_commas**
+* **qty_pluses**
+* **qty_asterisks**
+* **qty_hashtags**
+* **qty_slashs**
+* **qty_questionmarks**
+* **qty_exclamations**
+* **qty_equals**
+* **qty_ands**
+* **qty_ats**
+* **qty_spaces**
+* **qty_dollars**
+* **qty_percents**
+* **qty_tildes**
+
+# otros graficos
+
+```{r}
+p <- ggplot(phishing_bruto, aes(x = qty_dollar_params)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de ($) en parámetros") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00")) +
+    scale_y_continuous(name = NULL) +
+    scale_x_continuous(name = NULL) +
+  theme_minimal() +
+    theme(plot.title = element_text(size = 10))
+
+s <- ggplot(phishing_bruto, aes(x = qty_dollar_file)) + 
+  geom_bar(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por cantidad de ($) en archivo") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00"), guide = FALSE) +
+    scale_y_continuous(name = NULL) +
+    scale_x_continuous(name = NULL) +
+  theme_minimal() +
+    theme(plot.title = element_text(size = 10))
+
+ q <- ggplot(phishing_bruto |> filter(params_length > 0 & params_length <= 1500), aes(x = params_length)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por longitud de parámetros > 0") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00"), guide = FALSE) +
+     scale_y_continuous(name = NULL) +
+     scale_x_continuous(name = NULL, breaks = seq(200, 1200, 400)) +
+  theme_minimal() +
+     theme(plot.title = element_text(size = 10))
+ 
+f <- ggplot(phishing_bruto |> filter(qty_and_directory > 0), aes(x = qty_and_directory)) + 
+  geom_histogram(aes(fill = phishing), alpha = 0.7) +
+  labs(title = "Webs de Phishing por número de (&) > 0 en directorio") +
+  scale_fill_manual(values = c("#6C3483", "#FEDD00"), guide = FALSE) +
+  scale_y_continuous(name = NULL) +
+  scale_x_continuous(name = NULL) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 10))
+  
+
+
+grid.arrange(p, s, q, f, ncol = 2)
+```
+

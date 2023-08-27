@@ -1,0 +1,86 @@
+---
+title: "Técnicas de machine learning para la detección de páginas web de phishing"
+description: |
+  Trabajo de fin de máster
+author:
+  - name: Luis Pérez García (DNI 32724256-V)
+    affiliation: Universidad Complutense de Madrid
+    affiliation_url: 
+date: "`r Sys.Date()`"
+output:
+    distill::distill_article:
+        highlight: kate
+        colorlinks: true
+        code_folding: false
+        toc: true            
+        toc_depth: 3     
+---
+
+```{r setup, include = FALSE}
+# Ajuste comunes de los chunk
+knitr::opts_chunk$set(fig.width = 9, fig.asp = 1, out.width = "100%",
+                      message = FALSE, warning = FALSE,
+                      echo = TRUE, res = 400)
+```
+
+
+# RECETA
+logit_rec <- 
+ recipe(data = phishing_train, phishing ~ .) |> 
+  # Eliminamos variables
+  step_rm(c(qty_slash_domain, qty_questionmark_domain, qty_equal_domain,
+            qty_at_domain, qty_and_domain ,qty_exclamation_domain, 
+            qty_space_domain, qty_tilde_domain, qty_comma_domain, 
+            qty_plus_domain, qty_asterisk_domain, qty_hashtag_domain, 
+            qty_dollar_domain, qty_percent_domain, server_client_domain, 
+            qty_params, email_in_url, url_google_index, url_shortened, domain_google_index)) |> 
+  # Creamos las nuevas variables omitiendo los -1 primero
+  step_mutate(across(all_of(contains("_dot_")), ~ifelse(.x == -1, NA, .x))) |> 
+# Librerías
+
+Cargamos la librerías que usaremos a lo largo de todo el trabajo.
+
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(outliers)
+library(ggthemes)
+library(corrr)
+library(themis)
+library(knitr)
+library(corrr)
+library(corrplot)
+library(moments)
+library(pscl)
+library(MASS)
+library(ranger)
+library(ggfortify)
+library(knitr)
+library(vip)
+library(rpart.plot)
+library(MASS)
+library(LiblineaR)
+library(kernlab)
+library(xgboost)
+library(bonsai)
+library(caret)
+library(kableExtra)
+```
+
+# Datos
+
+Cargamos los datos brutos.
+
+```{r}
+phishing_bruto <- 
+  read.csv("dataset_full.csv")
+```
+
+```{r}
+phishing_bruto |> group_by(qty_slash_url) |> count(phishing) |> 
+  mutate(porc = 100*n/sum(n)) |> kbl() |> kable_styling()
+phishing_bruto |> group_by(qty_slash_url) |> count() |> 
+  mutate(porc = 100*n/sum(n)) |> kbl() |> kable_styling()
+```
+
+
